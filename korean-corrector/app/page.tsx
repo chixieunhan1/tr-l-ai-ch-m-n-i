@@ -44,6 +44,7 @@ export default function Home() {
   const interimRef = useRef('');
   const analyzingRef = useRef(false);
   const idRef = useRef(0);
+  const initRecogRef = useRef<(() => any) | null>(null);
 
   useEffect(() => {
     isOnRef.current = isOn;
@@ -89,11 +90,20 @@ export default function Home() {
     analyzingRef.current = false;
     setIsAnalyzing(false);
 
-    // Restart recognition to reset the speech buffer
-    if (isOnRef.current && recogRef.current) {
-      try {
-        recogRef.current.stop();
-      } catch (e) {}
+    // Create new recognition instance to fully reset speech buffer
+    if (isOnRef.current) {
+      if (recogRef.current) {
+        try { recogRef.current.onend = null; recogRef.current.stop(); } catch (e) {}
+      }
+      recogRef.current = null;
+      setTimeout(() => {
+        if (isOnRef.current && initRecogRef.current) {
+          recogRef.current = initRecogRef.current();
+          if (recogRef.current) {
+            try { recogRef.current.start(); } catch (e) {}
+          }
+        }
+      }, 300);
     }
   }, []);
 
@@ -149,6 +159,9 @@ export default function Home() {
 
     return r;
   }, [resetSilence]);
+
+  // Keep ref updated so analyze can call it
+  initRecogRef.current = initRecog;
 
   const toggleMic = useCallback(() => {
     if (!isOn) {
