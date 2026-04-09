@@ -21,8 +21,8 @@ export async function POST(req: NextRequest) {
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 1000,
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 600,
         system: `Bạn là giáo viên tiếng Hàn cho học sinh Việt Nam trình độ sơ-trung cấp. Phân tích câu tiếng Hàn học sinh vừa nói.
 
 Trả về JSON thuần túy (không markdown, không backtick):
