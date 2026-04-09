@@ -16,11 +16,9 @@ export async function POST(req: NextRequest) {
       messages: [
         {
           role: 'user',
-content: 'Phan tich cau tieng Han cua hoc sinh Viet Nam. Tra ve CHI 1 JSON hop le. QUAN TRONG: Tat ca reason, note, vi PHAI viet bang TIENG VIET co dau (vi du: Sai tro tu chu ngu, Dung sai thi dong tu). KHONG dung tieng Anh. upgrades gom 2-3 cach noi tu nhien hon.\n\nCau: ' + text + '\n\nJSON format:\n{"original":"cau goc","isCorrect":true/false,"corrected":"cau da sua","errors":[{"wrong":"phan sai","right":"phan dung","reason":"giai thich bang TIENG VIET"}],"upgrades":[{"ko":"cau tieng Han tu nhien hon","vi":"nghia TIENG VIET"}],"note":"ghi chu TIENG VIET"}'        },
-        {
-          role: 'assistant',
-          content: '{"original":"'
-        }
+          content: 'Analyze this Korean sentence from a Vietnamese student. Return ONLY valid JSON. All reason, note, vi fields MUST be in Vietnamese with diacritics. upgrades should have 2-3 natural alternatives.\n\nSentence: ' + text + '\n\nJSON format:\n{"original":"original","isCorrect":true/false,"corrected":"fixed","errors":[{"wrong":"x","right":"y","reason":"Vietnamese explanation"}],"upgrades":[{"ko":"better Korean","vi":"Vietnamese meaning"}],"note":"Vietnamese note"}'
+        },
+        { role: 'assistant', content: '{"original":"' }
       ]
     };
     const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -40,11 +38,25 @@ content: 'Phan tich cau tieng Han cua hoc sinh Viet Nam. Tra ve CHI 1 JSON hop l
       if (clean[i] === '{') depth++;
       if (clean[i] === '}') { depth--; if (depth === 0) { endIdx = i; break; } }
     }
-    const jsonStr = clean.substring(0, endIdx + 1);
-    const parsed = JSON.parse(jsonStr);
-    return NextResponse.json(parsed);
+    if (endIdx === 0) {
+      console.error('No JSON end found:', clean.substring(0, 200));
+      return NextResponse.json({ error: 'Bad response' }, { status: 500 });
+    }
+    let jsonStr = clean.substring(0, endIdx + 1);
+    jsonStr = jsonStr.replace(/,\s*}/g, '}').replace(/,\s*]/g, ']');
+    try {
+      const parsed = JSON.parse(jsonStr);
+      return NextResponse.json(parsed);
+    } catch (parseErr) {
+      console.error('Parse fail:', jsonStr.substring(0, 300));
+      const safeJson = jsonStr
+        .replace(/[\x00-\x1F]/g, ' ')
+        .replace(/(?<!\\)\\(?!["\\/bfnrtu])/g, '\\\\');
+      const parsed = JSON.parse(safeJson);
+      return NextResponse.json(parsed);
+    }
   } catch (e: any) {
-    console.error('Error:', e.message, e);
+    console.error('Error:', e.message);
     return NextResponse.json({ error: e.message || 'Error' }, { status: 500 });
   }
 }
