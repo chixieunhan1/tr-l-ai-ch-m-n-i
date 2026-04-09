@@ -166,4 +166,10 @@ export default function Home() {
 }
 
 function Row({label,type,vi,last,children}:{label:string;type:string;vi?:boolean;last?:boolean;children:React.ReactNode}) {
-  const colors:Record<string,{color:string;bg:string}> = {orig:{color:'var(--red)',bg:'var(--red-bg)'},fix:{color:'var(--green)',bg:'var(--green-bg)'},err:{color:'var(--amber)',bg:'rgba(251,191,36,0.06)'},up:{color:'var(--purple)',bg:'var(--purple-bg)'},note:{color:'var(--b
+  const colors:Record<string,{color:string;bg:string}> = {orig:{color:'var(--red)',bg:'var(--red-bg)'},fix:{color:'var(--green)',bg:'var(--green-bg)'},err:{color:'var(--amber)',bg:'rgba(251,191,36,0.06)'},up:{color:'var(--purple)',bg:'var(--purple-bg)'},note:{color:'var(--blue)',bg:'var(--blue-bg)'}};
+  const c = colors[type]||colors.note;
+  return (<div style={{display:'flex',borderBottom:last?'none':'1px solid var(--border)'}}>
+    <div style={{width:80,flexShrink:0,padding:'12px 14px',fontSize:11,fontWeight:600,display:'flex',alignItems:'flex-start',gap:5,borderRight:'1px solid var(--border)',color:c.color,background:c.bg}}>{label}</div>
+    <div style={{flex:1,padding:'12px 16px',fontSize:14,lineHeight:1.7,fontFamily:vi?"'Be Vietnam Pro',sans-serif":"'Noto Sans KR',sans-serif"}}>{children}</div>
+  </div>);
+}
