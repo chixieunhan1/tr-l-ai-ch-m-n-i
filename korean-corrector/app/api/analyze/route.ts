@@ -8,42 +8,44 @@ export async function POST(req: NextRequest) {
     }
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) {
-      return NextResponse.json({ error: 'API key not configured' }, { status: 500 });
+      return NextResponse.json({ error: 'No key' }, { status: 500 });
     }
+    const body = {
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 500,
+      messages: [
+        {
+          role: 'user',
+          content: 'Analyze this Korean sentence spoken by a Vietnamese student. Return ONLY valid JSON.\n\nSentence: ' + text + '\n\nJSON format:\n{"original":"the sentence","isCorrect":true/false,"corrected":"fixed sentence","errors":[{"wrong":"x","right":"y","reason":"Vietnamese"}],"upgrades":[{"ko":"better Korean","vi":"Vietnamese meaning"}],"note":"Vietnamese note"}'
+        },
+        {
+          role: 'assistant',
+          content: '{"original":"'
+        }
+      ]
+    };
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 600,
-        system: 'You are a Korean teacher for Vietnamese students. Analyze Korean sentences. Always respond with ONLY valid JSON matching this schema: {"original":"string","isCorrect":boolean,"corrected":"string","errors":[{"wrong":"string","right":"string","reason":"string in Vietnamese"}],"upgrades":[{"ko":"string","vi":"string in Vietnamese"}],"note":"string in Vietnamese"}. If no errors, set errors to empty array. Always include 2-3 upgrades.',
-        messages: [
-          { role: 'user', content: text },
-          { role: 'assistant', content: '{' }
-        ],
-      }),
+      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify(body),
     });
     if (!res.ok) {
-      const errBody = await res.text();
-      console.error('API error:', res.status, errBody);
-      return NextResponse.json({ error: 'API error: ' + res.status }, { status: res.status });
+      return NextResponse.json({ error: 'API ' + res.status }, { status: res.status });
     }
     const data = await res.json();
-    const raw = '{' + data.content[0].text;
-    const clean = raw.replace(/```json/g, '').replace(/```/g, '').trim();
-    const jsonMatch = clean.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      console.error('No JSON found:', clean);
-      return NextResponse.json({ error: 'Invalid response' }, { status: 500 });
+    const full = '{"original":"' + data.content[0].text;
+    const clean = full.replace(/```json/g, '').replace(/```/g, '').trim();
+    let endIdx = 0;
+    let depth = 0;
+    for (let i = 0; i < clean.length; i++) {
+      if (clean[i] === '{') depth++;
+      if (clean[i] === '}') { depth--; if (depth === 0) { endIdx = i; break; } }
     }
-    const parsed = JSON.parse(jsonMatch[0]);
+    const jsonStr = clean.substring(0, endIdx + 1);
+    const parsed = JSON.parse(jsonStr);
     return NextResponse.json(parsed);
   } catch (e: any) {
-    console.error('Error:', e);
+    console.error('Error:', e.message, e);
     return NextResponse.json({ error: e.message || 'Error' }, { status: 500 });
   }
 }
