@@ -53,7 +53,13 @@ export default function Home() {
 
   const handleGrade = useCallback(() => {
     const full = (finalRef.current + interimRef.current).trim();
-    if (full && !analyzingRef.current) analyze(full);
+    if (full && !analyzingRef.current) {
+      finalRef.current = ''; interimRef.current = ''; setFinalBuf(''); setInterimBuf('');
+      if (recogRef.current) { try { recogRef.current.onend = null; recogRef.current.stop(); } catch (e) {} }
+      recogRef.current = null;
+      setTimeout(() => { if (isOnRef.current && initRecogRef.current) { recogRef.current = initRecogRef.current(); if (recogRef.current) { try { recogRef.current.start(); } catch (e) {} } } }, 300);
+      analyze(full);
+    }
   }, [analyze]);
 
   const initRecog = useCallback(() => {
