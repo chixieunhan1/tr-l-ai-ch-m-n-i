@@ -114,7 +114,7 @@ export default function Home() {
       if (full && !analyzingRef.current) {
         analyze(full);
       }
-    }, 1800);
+    }, 1200);
   }, [analyze]);
 
   const initRecog = useCallback(() => {
