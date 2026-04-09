@@ -37,18 +37,7 @@ export default function Home() {
     } catch (e: any) {
       setResults((prev) => prev.map((r) => r.id === id ? { ...r, loading: false, error: e.message || 'Lỗi kết nối' } : r));
     }
-    finalRef.current = ''; interimRef.current = ''; setFinalBuf(''); setInterimBuf('');
-    analyzingRef.current = false; setIsAnalyzing(false);
-    if (isOnRef.current) {
-      if (recogRef.current) { try { recogRef.current.onend = null; recogRef.current.stop(); } catch (e) {} }
-      recogRef.current = null;
-      setTimeout(() => {
-        if (isOnRef.current && initRecogRef.current) {
-          recogRef.current = initRecogRef.current();
-          if (recogRef.current) { try { recogRef.current.start(); } catch (e) {} }
-        }
-      }, 300);
-    }
+   analyzingRef.current = false; setIsAnalyzing(false);
   }, []);
 
   const handleGrade = useCallback(() => {
