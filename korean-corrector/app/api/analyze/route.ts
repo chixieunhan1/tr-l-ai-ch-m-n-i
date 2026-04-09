@@ -10,19 +10,10 @@ export async function POST(req: NextRequest) {
     if (!apiKey) {
       return NextResponse.json({ error: 'No key' }, { status: 500 });
     }
-    const prompt = [
-      'Analyze this Korean sentence from a Vietnamese student.',
-      'Return ONLY valid JSON. All reason, note, vi fields MUST be in Vietnamese with diacritics.',
-      'Include 2-3 natural alternative expressions in upgrades.',
-      '',
-      'Sentence: ' + text,
-      '',
-      'JSON format:',
-      '{"original":"original","isCorrect":true/false,"corrected":"fixed","errors":[{"wrong":"x","right":"y","reason":"Vietnamese"}],"upgrades":[{"ko":"better Korean","vi":"Vietnamese"}],"note":"Vietnamese"}'
-    ].join('\n');
+    const prompt = 'Analyze this Korean sentence from a Vietnamese student. Return ONLY valid JSON. All reason, note, vi fields MUST be in Vietnamese with diacritics. Include 2-3 natural alternative expressions in upgrades.\n\nSentence: ' + text + '\n\nJSON format:\n{"original":"original","isCorrect":true/false,"corrected":"fixed","errors":[{"wrong":"x","right":"y","reason":"Vietnamese"}],"upgrades":[{"ko":"better Korean","vi":"Vietnamese"}],"note":"Vietnamese"}';
     const body = {
       model: 'claude-sonnet-4-20250514',
-      max_tokens: 500,
+      max_tokens: 2000,
       messages: [
         { role: 'user', content: prompt },
         { role: 'assistant', content: '{"original":"' }
