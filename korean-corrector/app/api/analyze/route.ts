@@ -10,14 +10,21 @@ export async function POST(req: NextRequest) {
     if (!apiKey) {
       return NextResponse.json({ error: 'No key' }, { status: 500 });
     }
+    const prompt = [
+      'Analyze this Korean sentence from a Vietnamese student.',
+      'Return ONLY valid JSON. All reason, note, vi fields MUST be in Vietnamese with diacritics.',
+      'Include 2-3 natural alternative expressions in upgrades.',
+      '',
+      'Sentence: ' + text,
+      '',
+      'JSON format:',
+      '{"original":"original","isCorrect":true/false,"corrected":"fixed","errors":[{"wrong":"x","right":"y","reason":"Vietnamese"}],"upgrades":[{"ko":"better Korean","vi":"Vietnamese"}],"note":"Vietnamese"}'
+    ].join('\n');
     const body = {
       model: 'claude-sonnet-4-20250514',
       max_tokens: 500,
       messages: [
-        {
-          role: 'user',
-          content: 'Analyze this Korean sentence from a Vietnamese student. Return ONLY valid JSON. All reason, note, vi fields MUST be in Vietnamese with diacritics. upgrades should have 2-3 natural alternatives.\n\nSentence: ' + text + '\n\nJSON format:\n{"original":"original","isCorrect":true/false,"corrected":"fixed","errors":[{"wrong":"x","right":"y","reason":"Vietnamese explanation"}],"upgrades":[{"ko":"better Korean","vi":"Vietnamese meaning"}],"note":"Vietnamese note"}'
-        },
+        { role: 'user', content: prompt },
         { role: 'assistant', content: '{"original":"' }
       ]
     };
@@ -39,22 +46,14 @@ export async function POST(req: NextRequest) {
       if (clean[i] === '}') { depth--; if (depth === 0) { endIdx = i; break; } }
     }
     if (endIdx === 0) {
-      console.error('No JSON end found:', clean.substring(0, 200));
+      console.error('No JSON end:', clean.substring(0, 200));
       return NextResponse.json({ error: 'Bad response' }, { status: 500 });
     }
     let jsonStr = clean.substring(0, endIdx + 1);
     jsonStr = jsonStr.replace(/,\s*}/g, '}').replace(/,\s*]/g, ']');
-    try {
-      const parsed = JSON.parse(jsonStr);
-      return NextResponse.json(parsed);
-    } catch (parseErr) {
-      console.error('Parse fail:', jsonStr.substring(0, 300));
-      const safeJson = jsonStr
-        .replace(/[\x00-\x1F]/g, ' ')
-        .replace(/(?<!\\)\\(?!["\\/bfnrtu])/g, '\\\\');
-      const parsed = JSON.parse(safeJson);
-      return NextResponse.json(parsed);
-    }
+    jsonStr = jsonStr.replace(/[\x00-\x1F\x7F]/g, ' ');
+    const parsed = JSON.parse(jsonStr);
+    return NextResponse.json(parsed);
   } catch (e: any) {
     console.error('Error:', e.message);
     return NextResponse.json({ error: e.message || 'Error' }, { status: 500 });
