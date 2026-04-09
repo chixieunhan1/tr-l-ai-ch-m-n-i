@@ -20,8 +20,7 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify({
         model: 'claude-haiku-4-5-20251001',
         max_tokens: 600,
-        system: `Bạn là giáo viên tiếng Hàn cho học sinh Việt Nam. Phân tích câu tiếng Hàn. Trả về ĐÚNG 1 JSON object, KHÔNG có text nào khác trước hoặc sau JSON:
-{"original":"câu gốc","isCorrect":true,"corrected":"câu sửa","errors":[{"wrong":"sai","right":"đúng","reason":"lý do"}],"upgrades":[{"ko":"câu nâng","vi":"nghĩa"}],"note":"ghi chú"}`,
+        system: 'Ban la giao vien tieng Han cho hoc sinh Viet Nam. Phan tich cau tieng Han. CHI tra ve 1 JSON object DUY NHAT, KHONG co bat ky text nao khac truoc hoac sau JSON. Format: {"original":"cau goc","isCorrect":true,"corrected":"cau sua","errors":[{"wrong":"sai","right":"dung","reason":"ly do tieng Viet"}],"upgrades":[{"ko":"cau nang cao hon","vi":"nghia tieng Viet"}],"note":"ghi chu ngan tieng Viet"}',
         messages: [{ role: 'user', content: text }],
       }),
     });
@@ -35,8 +34,8 @@ export async function POST(req: NextRequest) {
     raw = raw.replace(/```json/g, '').replace(/```/g, '').trim();
     const jsonMatch = raw.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
-      console.error('No JSON found in:', raw);
-      return NextResponse.json({ error: 'Invalid AI response' }, { status: 500 });
+      console.error('No JSON found:', raw);
+      return NextResponse.json({ error: 'Invalid response' }, { status: 500 });
     }
     const parsed = JSON.parse(jsonMatch[0]);
     return NextResponse.json(parsed);
