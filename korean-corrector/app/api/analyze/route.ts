@@ -16,8 +16,7 @@ export async function POST(req: NextRequest) {
       messages: [
         {
           role: 'user',
-          content: 'Phan tich cau tieng Han cua hoc sinh Viet Nam. Tra ve CHI 1 JSON hop le. Giai thich reason va note bang TIENG VIET. upgrades gom 2-3 cach noi tu nhien hon.\n\nCau: ' + text + '\n\nJSON format:\n{"original":"cau goc","isCorrect":true/false,"corrected":"cau da sua","errors":[{"wrong":"phan sai","right":"phan dung","reason":"ly do bang tieng Viet"}],"upgrades":[{"ko":"cau tieng Han tu nhien hon","vi":"nghia tieng Viet"}],"note":"ghi chu bang tieng Viet"}'
-        },
+content: 'Phan tich cau tieng Han cua hoc sinh Viet Nam. Tra ve CHI 1 JSON hop le. QUAN TRONG: Tat ca reason, note, vi PHAI viet bang TIENG VIET co dau (vi du: Sai tro tu chu ngu, Dung sai thi dong tu). KHONG dung tieng Anh. upgrades gom 2-3 cach noi tu nhien hon.\n\nCau: ' + text + '\n\nJSON format:\n{"original":"cau goc","isCorrect":true/false,"corrected":"cau da sua","errors":[{"wrong":"phan sai","right":"phan dung","reason":"giai thich bang TIENG VIET"}],"upgrades":[{"ko":"cau tieng Han tu nhien hon","vi":"nghia TIENG VIET"}],"note":"ghi chu TIENG VIET"}'        },
         {
           role: 'assistant',
           content: '{"original":"'
