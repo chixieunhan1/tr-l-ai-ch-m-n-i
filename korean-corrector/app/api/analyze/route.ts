@@ -51,8 +51,10 @@ Trả về JSON thuần túy (không markdown, không backtick):
     }
 
     const data = await res.json();
-    const raw = data.content[0].text.replace(/```json|```/g, '').trim();
-    const parsed = JSON.parse(raw);
+    let raw = data.content[0].text.replace(/```json|```/g, '').trim();
+const jsonMatch = raw.match(/\{[\s\S]*\}/);
+if (!jsonMatch) throw new Error('No JSON found in response');
+const parsed = JSON.parse(jsonMatch[0]);
 
     return NextResponse.json(parsed);
   } catch (e: any) {
