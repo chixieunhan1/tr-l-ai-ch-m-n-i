@@ -88,6 +88,13 @@ export default function Home() {
     setInterimBuf('');
     analyzingRef.current = false;
     setIsAnalyzing(false);
+
+    // Restart recognition to reset the speech buffer
+    if (isOnRef.current && recogRef.current) {
+      try {
+        recogRef.current.stop();
+      } catch (e) {}
+    }
   }, []);
 
   const resetSilence = useCallback(() => {
