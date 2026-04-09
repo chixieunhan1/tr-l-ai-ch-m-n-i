@@ -16,7 +16,7 @@ export async function POST(req: NextRequest) {
       messages: [
         {
           role: 'user',
-          content: 'Analyze this Korean sentence spoken by a Vietnamese student. Return ONLY valid JSON.\n\nSentence: ' + text + '\n\nJSON format:\n{"original":"the sentence","isCorrect":true/false,"corrected":"fixed sentence","errors":[{"wrong":"x","right":"y","reason":"Vietnamese"}],"upgrades":[{"ko":"better Korean","vi":"Vietnamese meaning"}],"note":"Vietnamese note"}'
+          content: 'Phan tich cau tieng Han cua hoc sinh Viet Nam. Tra ve CHI 1 JSON hop le. Giai thich reason va note bang TIENG VIET. upgrades gom 2-3 cach noi tu nhien hon.\n\nCau: ' + text + '\n\nJSON format:\n{"original":"cau goc","isCorrect":true/false,"corrected":"cau da sua","errors":[{"wrong":"phan sai","right":"phan dung","reason":"ly do bang tieng Viet"}],"upgrades":[{"ko":"cau tieng Han tu nhien hon","vi":"nghia tieng Viet"}],"note":"ghi chu bang tieng Viet"}'
         },
         {
           role: 'assistant',
