@@ -135,9 +135,7 @@ export default function Home() {
               {isAnalyzing ? '⏳ Đang chấm...' : '✏️ Chấm'}
             </button>
           </div>
-          <div style={{width:'100%',minHeight:40,textAlign:'center',fontSize:18,fontFamily:"'Noto Sans KR',sans-serif",lineHeight:1.6}}>
-            {finalBuf||interimBuf ? (<>{finalBuf&&<span style={{color:'var(--text)'}}>{finalBuf}</span>}{interimBuf&&<span style={{color:'var(--text3)'}}>{interimBuf}</span>}</>) : (<span style={{fontSize:14,color:'var(--text3)',fontFamily:"'Be Vietnam Pro'"}}>Bấm mic → nghe tiếng Hàn → bấm Chấm khi nói xong</span>)}
-          </div>
+          <textarea value={finalBuf + interimBuf} onChange={(e) => { finalRef.current = e.target.value; interimRef.current = ''; setFinalBuf(e.target.value); setInterimBuf(''); }} placeholder="Bấm mic → nghe tiếng Hàn → sửa nếu cần → bấm Chấm" style={{width:'100%',minHeight:60,textAlign:'center',fontSize:18,fontFamily:"'Noto Sans KR',sans-serif",lineHeight:1.6,background:'transparent',border:'1px solid var(--border)',borderRadius:8,color:'var(--text)',padding:'10px',resize:'vertical',outline:'none'}} />
           <div style={{fontSize:12,color:'var(--text3)'}}>Cần dùng Chrome · Bật Loopback trên AG01 để nghe Zoom</div>
         </div>
 
