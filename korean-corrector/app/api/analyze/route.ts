@@ -4,9 +4,12 @@ export const runtime = 'edge';
 
 type Mode = 'fix' | 'deep';
 
-const CONFIG: Record<Mode, { model: string; max_tokens: number; temperature: number }> = {
-  fix: { model: 'claude-haiku-4-5-20251001', max_tokens: 500, temperature: 0 },
-  deep: { model: 'claude-sonnet-4-20250514', max_tokens: 1000, temperature: 0.6 },
+// Sonnet 5 tu choi temperature/top_p/top_k khac mac dinh (loi 400) va bat adaptive
+// thinking khi khong khai bao. Tat thinking de thinking khong an het max_tokens
+// (max_tokens la tran cho ca thinking lan text) va de giu do tre thap.
+const CONFIG: Record<Mode, { model: string; max_tokens: number; extra: Record<string, unknown> }> = {
+  fix: { model: 'claude-haiku-4-5-20251001', max_tokens: 500, extra: { temperature: 0 } },
+  deep: { model: 'claude-sonnet-5', max_tokens: 1000, extra: { thinking: { type: 'disabled' } } },
 };
 
 function contextBlock(context: string[]): string {
@@ -85,7 +88,7 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify({
         model: cfg.model,
         max_tokens: cfg.max_tokens,
-        temperature: cfg.temperature,
+        ...cfg.extra,
         messages: [{ role: 'user', content: buildPrompt(mode, text, context) }],
       }),
     });
