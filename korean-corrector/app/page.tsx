@@ -43,16 +43,22 @@ const PART_TAIL = ['이','가','은','는','을','를','에','에서','로','으
 // Duoi cau hoan chinh
 const END_TAIL = ['요','습니다','습니까','죠','네요','군요','거든요','잖아요','을까요','을게요',
   '세요','어','아','지','야','니','냐','자','구나','네'];
-// ㅂ니다, ㄹ까요, ㄹ게요
-const END_JONG: [string, string][] = [['ㅂ', '니다'], ['ㄹ', '까요'], ['ㄹ', '게요']];
+// ㅂ니다, ㅂ니까, ㄹ까요, ㄹ게요
+// ㅂ니까 la dang chung cua 습니까 (vd 안녕하십니까); thieu no thi 십니까 bi doc nham
+// thanh lien tu 니까 -> cho 4000ms trong khi cau chao da tron.
+const END_JONG: [string, string][] = [['ㅂ', '니다'], ['ㅂ', '니까'], ['ㄹ', '까요'], ['ㄹ', '게요']];
 // Duoi mot am tiet de trung voi danh tu thuong (한국어, 편지, 모자, 어머니...).
 // Van tinh la het cau khi o cuoi, nhung khong dung de bat luat dao trat tu.
 const WEAK_END = ['어','아','지','야','니','냐','자','네'];
 
 // Lien tu mo cau: bao hieu cau moi, khong duoc noi vao cau truoc
 const OPENERS = ['그리고','그래서','그런데','근데','그러니까','하지만','그럼','또'];
-// Dai tu chu ngu: cung bao hieu cau moi
-const SUBJECTS = ['저는','나는','제가','내가','우리'];
+// Dai tu chu ngu: cung bao hieu cau moi. Dung chung cho luat gop cau va luat dao trat tu.
+const SUBJECTS = ['저는','제가','나는','내가','우리는','우리','저희'];
+// Cau chao / tu dem: tron ve mat ngu phap nhung thuong chi la mo dau, nguoi noi con noi tiep.
+// Luat dao trat tu bo qua chung, xet duoi hoan chinh ke tiep.
+const GREETINGS = ['안녕하세요','안녕하십니까','네','예','아니요','감사합니다','고맙습니다',
+  '죄송합니다','미안해요','그래요','맞아요','알겠습니다'];
 
 const JONGSEONG = ['','ㄱ','ㄲ','ㄳ','ㄴ','ㄵ','ㄶ','ㄷ','ㄹ','ㄺ','ㄻ','ㄼ','ㄽ','ㄾ','ㄿ','ㅀ',
   'ㅁ','ㅂ','ㅄ','ㅅ','ㅆ','ㅇ','ㅈ','ㅊ','ㅋ','ㅌ','ㅍ','ㅎ'];
@@ -95,16 +101,33 @@ function matchTail(word: string): Rule | null {
   return null;
 }
 
-// Dao trat tu: duoi hoan chinh nam giua cau, phan sau chi 1-3 tu
-// va khong bat dau bang lien tu mo cau. Chi nhan duoi ro rang (strong),
-// neu khong danh tu nhu 한국어 se bi hieu nham la het cau.
-// Tra ve tu mang duoi hoan chinh do, hoac null.
+const norm = (w: string) => w.replace(/[.,!?~…·]+$/, '');
+
+// Phan sau duoi phai TOAN danh tu / tro tu / pho tu (밥은, 어제, 학교에서, 너무).
+// Dinh mot lien tu hay mot duoi hoan chinh ro rang la co dong tu da chia -> khong phai dao.
+const isPlainTail = (w: string) => {
+  const t = matchTail(norm(w));
+  return !(t?.kind === 'conj' || (t?.kind === 'end' && t.strong));
+};
+
+// Dao trat tu: duoi hoan chinh nam giua cau, phan sau chi 1-3 tu.
+// Chi nhan duoi ro rang (strong), neu khong danh tu nhu 한국어 se bi hieu nham la het cau.
+// Duyet TU TRAI SANG PHAI de con bo qua duoc cau chao dung dau. Tra ve tu mang duoi do.
 function reorderPivot(words: string[]): string | null {
   const n = words.length;
-  for (let i = n - 2; i >= Math.max(0, n - 4); i--) {
-    const m = matchTail(words[i]);
+  for (let i = 0; i <= n - 2; i++) {
+    const m = matchTail(norm(words[i]));
     if (!m || m.kind !== 'end' || !m.strong) continue;
-    if (OPENERS.some(o => words[i + 1].startsWith(o))) continue;
+
+    // (2) Cau chao/tu dem chi la mo dau -> bo qua, xet duoi hoan chinh ke tiep.
+    if (GREETINGS.includes(norm(words[i]))) continue;
+
+    const tail = words.slice(i + 1);
+    if (tail.length > 3) continue;                              // phan sau chi 1-3 tu
+    if (OPENERS.some(o => tail[0].startsWith(o))) continue;     // lien tu mo cau -> cau moi
+    if (SUBJECTS.some(s => tail[0].startsWith(s))) continue;    // (1) dai tu chu ngu -> cau moi
+    if (!tail.every(isPlainTail)) continue;                     // (3) phai toan danh/tro/pho tu
+
     return words[i];
   }
   return null;
