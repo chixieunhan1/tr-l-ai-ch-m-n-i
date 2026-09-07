@@ -91,25 +91,50 @@ function matchTail(word: string): Rule | null {
 // Dao trat tu: duoi hoan chinh nam giua cau, phan sau chi 1-3 tu
 // va khong bat dau bang lien tu mo cau. Chi nhan duoi ro rang (strong),
 // neu khong danh tu nhu 한국어 se bi hieu nham la het cau.
-function isReordered(words: string[]): boolean {
+// Tra ve tu mang duoi hoan chinh do, hoac null.
+function reorderPivot(words: string[]): string | null {
   const n = words.length;
   for (let i = n - 2; i >= Math.max(0, n - 4); i--) {
     const m = matchTail(words[i]);
     if (!m || m.kind !== 'end' || !m.strong) continue;
     if (OPENERS.some(o => words[i + 1].startsWith(o))) continue;
-    return true;
+    return words[i];
   }
-  return false;
+  return null;
+}
+
+interface Wait { ms: number; reason: string }
+
+function decideSilence(text: string): Wait {
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return { ms: MS_DEFAULT, reason: 'chưa có chữ' };
+  const last = words[words.length - 1];
+  const m = matchTail(last);
+
+  // Chong nhieu: sau khi Chrome restart phien, no hay bat tieng tho thanh MOT am tiet le
+  // (네, 어, 아...). Neu tu ngay truoc van la lien tu chua het cau thi tin lien tu, cho tiep,
+  // dung de mot am tiet rac keo nguong tu 4000ms xuong 1200ms. Bo doan nay neu thay cat nham.
+  if (m?.kind === 'end' && !m.strong && last.length === 1 && words.length >= 2) {
+    const prev = matchTail(words[words.length - 2]);
+    if (prev?.kind === 'conn') {
+      return { ms: MS_UNFINISHED, reason: 'đuôi "' + prev.tail + '" chưa hết câu, bỏ qua "' + last + '" (nhiễu?)' };
+    }
+  }
+
+  if (m?.kind === 'end') return { ms: MS_FINISHED, reason: 'đuôi "' + m.tail + '" — câu đã trọn' };
+  const pivot = reorderPivot(words);
+  if (pivot) return { ms: MS_REORDER, reason: 'đảo trật tự sau "' + pivot + '"' }; // uu tien hon luat tro tu 4000ms
+  if (m?.kind === 'conn') return { ms: MS_UNFINISHED, reason: 'đuôi "' + m.tail + '" — câu chưa hết' };
+  return { ms: MS_DEFAULT, reason: 'không rõ đuôi "' + last + '"' };
 }
 
 function getSilenceMs(text: string): number {
-  const words = text.trim().split(/\s+/).filter(Boolean);
-  if (!words.length) return MS_DEFAULT;
-  const m = matchTail(words[words.length - 1]);
-  if (m?.kind === 'end') return MS_FINISHED;
-  if (isReordered(words)) return MS_REORDER; // uu tien hon luat tro tu 4000ms
-  if (m?.kind === 'conn') return MS_UNFINISHED;
-  return MS_DEFAULT;
+  return decideSilence(text).ms;
+}
+
+// Ghep van ban giua cac phien nhan dang, bo khoang trang thua.
+function joinText(a: string, b: string): string {
+  return [a.trim(), b.trim()].filter(Boolean).join(' ');
 }
 
 // Cau bat dau bang dai tu chu ngu hoac lien tu mo cau -> cau moi, khong noi.
@@ -123,20 +148,25 @@ export default function Home() {
   const [buf, setBuf] = useState('');
   const [results, setResults] = useState<RI[]>([]);
   const [active, setActive] = useState(0);
+  const [wait, setWait] = useState<{ ms: number; reason: string; until: number } | null>(null);
+  const [, forceTick] = useState(0);
 
   const recogRef = useRef<any>(null);
   const isOnRef = useRef(false);
-  const bufRef = useRef('');
+  const bufRef = useRef('');            // = committed + session, luon la van ban day du
+  const committedRef = useRef('');      // van ban tu CAC PHIEN TRUOC (Chrome tu restart)
+  const sessionRef = useRef('');        // van ban cua phien nhan dang hien tai
   const idRef = useRef(0);
   const baseIdxRef = useRef(0);
   const lenRef = useRef(0);
   const silenceRef = useRef<any>(null);
+  const armTokenRef = useRef(0);        // chan timer cu da bi huy nhung van chay xong
   const historyRef = useRef<string[]>([]);
   const queueRef = useRef<Job[]>([]);
   const activeRef = useRef(0);
   const ctrlRef = useRef<Map<number, AbortController>>(new Map());
   const lastRef = useRef<{ id: number; text: string; at: number; context: string[]; sealed: boolean } | null>(null);
-  const fireRef = useRef<() => void>(() => {});
+  const fireRef = useRef<(seal?: boolean, reason?: string) => void>(() => {});
   const drainRef = useRef<() => void>(() => {});
   const mkRef = useRef<(() => any) | null>(null);
 
@@ -217,16 +247,22 @@ export default function Home() {
     drainRef.current();
   }, [patch]);
 
+  // Huy timer dang chay. Tang token de callback cu (neu da vao hang doi) tu bo qua.
   const clearSilence = useCallback(() => {
     if (silenceRef.current) { clearTimeout(silenceRef.current); silenceRef.current = null }
+    armTokenRef.current++;
+    setWait(null);
   }, []);
 
+  // ĐÂY LÀ ĐƯỜNG DUY NHẤT tạo thẻ. Không nơi nào khác được gọi submit().
   // seal = học viên bấm "Xong câu": chốt luôn, câu sau không gộp vào nữa.
-  const fire = useCallback((seal?: boolean) => {
+  const fire = useCallback((seal?: boolean, reason?: string) => {
     clearSilence();
     const text = bufRef.current;
-    if (!text.trim()) return;
+    if (!text.trim()) { console.log('[flush] bỏ qua, buffer rỗng (' + (reason || '?') + ')'); return }
+    console.log('[flush] ' + (reason || '?') + ' → ' + JSON.stringify(text));
     baseIdxRef.current = lenRef.current;
+    committedRef.current = ''; sessionRef.current = '';
     bufRef.current = ''; setBuf('');
     submit(text);
     if (seal && lastRef.current) lastRef.current.sealed = true;
@@ -236,7 +272,15 @@ export default function Home() {
   // Mỗi lần Web Speech trả kết quả mới thì tính lại ngưỡng và đặt lại timer.
   const armSilence = useCallback((text: string) => {
     if (silenceRef.current) clearTimeout(silenceRef.current);
-    silenceRef.current = setTimeout(() => { silenceRef.current = null; fireRef.current() }, getSilenceMs(text));
+    const token = ++armTokenRef.current;
+    const { ms, reason } = decideSilence(text);
+    silenceRef.current = setTimeout(() => {
+      silenceRef.current = null;
+      // Timer cũ đã bị thay bằng timer mới thì không được chốt.
+      if (token !== armTokenRef.current) { console.log('[timer] bỏ qua timer cũ'); return }
+      fireRef.current(false, 'timer ' + ms + 'ms — ' + reason);
+    }, ms);
+    setWait({ ms, reason, until: Date.now() + ms });
   }, []);
 
   const mkRecog = useCallback(() => {
@@ -244,27 +288,60 @@ export default function Home() {
     if (!S) return null;
     const r = new S();
     r.lang = 'ko-KR'; r.continuous = true; r.interimResults = true;
-    r.onstart = () => { baseIdxRef.current = 0; lenRef.current = 0 };
+
+    // Phiên mới: chỉ reset chỉ số kết quả của phiên, KHÔNG đụng vào buffer.
+    r.onstart = () => {
+      baseIdxRef.current = 0; lenRef.current = 0; sessionRef.current = '';
+      console.log('[speech] onstart — giữ buffer: ' + JSON.stringify(committedRef.current));
+    };
+
     r.onresult = (e: any) => {
       lenRef.current = e.results.length;
-      let txt = '';
-      for (let j = baseIdxRef.current; j < e.results.length; j++) txt += e.results[j][0].transcript;
-      bufRef.current = txt; setBuf(txt);
-      if (txt.trim()) armSilence(txt);
+      // Ghép cả final lẫn interim của phiên này...
+      let session = '';
+      for (let j = baseIdxRef.current; j < e.results.length; j++) session += e.results[j][0].transcript;
+      sessionRef.current = session;
+      // ...rồi nối với phần đã nói ở các phiên trước, để ngưỡng đọc trên câu ĐẦY ĐỦ.
+      const full = joinText(committedRef.current, session);
+      bufRef.current = full; setBuf(full);
+      if (full.trim()) armSilence(full);
     };
-    r.onerror = () => {};
-    r.onend = () => { if (isOnRef.current) setTimeout(() => { try { r.start() } catch (e) {} }, 200) };
+
+    // Chrome tự kết thúc phiên sau vài giây im lặng. Ba sự kiện dưới đây
+    // TUYỆT ĐỐI không được chốt câu: giữ nguyên buffer và timer đang chạy.
+    r.onspeechend = () => console.log('[speech] onspeechend — không flush');
+    r.onaudioend = () => console.log('[speech] onaudioend — không flush');
+    r.onerror = (e: any) => console.log('[speech] onerror ' + (e?.error || '?') + ' — không flush');
+    r.onend = () => {
+      // Dồn phần vừa nghe được sang committed để phiên sau không ghi đè mất.
+      committedRef.current = joinText(committedRef.current, sessionRef.current);
+      sessionRef.current = '';
+      bufRef.current = committedRef.current;
+      console.log('[speech] onend — không flush, timer '
+        + (silenceRef.current ? 'vẫn chạy' : 'không có')
+        + ', giữ buffer: ' + JSON.stringify(bufRef.current));
+      if (isOnRef.current) setTimeout(() => { try { r.start() } catch (e) {} }, 200);
+    };
     return r;
   }, [armSilence]);
   mkRef.current = mkRecog;
+
+  // Đếm ngược cho dòng trạng thái "Chờ Xs".
+  useEffect(() => {
+    if (!wait) return;
+    const h = setInterval(() => forceTick(t => t + 1), 100);
+    return () => clearInterval(h);
+  }, [wait]);
 
   const toggleMic = useCallback(() => {
     if (!isOn) {
       if (!recogRef.current && mkRef.current) recogRef.current = mkRef.current();
       if (!recogRef.current) return;
+      committedRef.current = ''; sessionRef.current = '';
       try { recogRef.current.start() } catch (e) {}
       setIsOn(true);
     } else {
+      // Tắt mic là dừng hẳn, không chốt nốt — học viên bấm "Chấm" nếu muốn.
       clearSilence();
       if (recogRef.current) { try { recogRef.current.onend = null; recogRef.current.stop() } catch (e) {} }
       recogRef.current = null;
@@ -284,10 +361,20 @@ export default function Home() {
       <div style={{background:'var(--sf)',border:'1px solid var(--bd)',borderRadius:16,padding:28,display:'flex',flexDirection:'column',alignItems:'center',gap:16}}>
         <div style={{display:'flex',alignItems:'center',gap:20}}>
           <button onClick={toggleMic} style={{width:72,height:72,borderRadius:'50%',border:isOn?'1.5px solid #f87171':'1.5px solid var(--bd)',background:isOn?'rgba(248,113,113,.1)':'var(--sf2)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',animation:isOn?'mp 1.5s infinite':'none'}}><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke={isOn?'#f87171':'var(--t2)'} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><line x1="12" y1="19" x2="12" y2="22"/><line x1="8" y1="22" x2="16" y2="22"/></svg></button>
-          <button onClick={()=>fire()} disabled={!has} style={{padding:'14px 28px',borderRadius:12,border:'none',background:has?'var(--ac)':'var(--sf2)',color:has?'white':'var(--t3)',fontSize:15,fontWeight:600,cursor:has?'pointer':'default'}}>Chấm</button>
-          <button onClick={()=>fire(true)} disabled={!has} title="Gửi ngay và chốt câu, phần nói sau sẽ tính là câu mới" style={{padding:'14px 22px',borderRadius:12,border:has?'1px solid var(--ac)':'1px solid var(--bd)',background:'transparent',color:has?'var(--ac)':'var(--t3)',fontSize:14,fontWeight:600,cursor:has?'pointer':'default'}}>Xong câu</button>
+          <button onClick={()=>fire(false,'nút Chấm')} disabled={!has} style={{padding:'14px 28px',borderRadius:12,border:'none',background:has?'var(--ac)':'var(--sf2)',color:has?'white':'var(--t3)',fontSize:15,fontWeight:600,cursor:has?'pointer':'default'}}>Chấm</button>
+          <button onClick={()=>fire(true,'nút Xong câu')} disabled={!has} title="Gửi ngay và chốt câu, phần nói sau sẽ tính là câu mới" style={{padding:'14px 22px',borderRadius:12,border:has?'1px solid var(--ac)':'1px solid var(--bd)',background:'transparent',color:has?'var(--ac)':'var(--t3)',fontSize:14,fontWeight:600,cursor:has?'pointer':'default'}}>Xong câu</button>
         </div>
-        <textarea value={buf} onChange={e=>{bufRef.current=e.target.value;setBuf(e.target.value);clearSilence()}} placeholder="Bấm mic rồi nói. Ngừng nói là tự chấm — đuôi câu chưa xong thì máy chờ lâu hơn." style={{width:'100%',minHeight:60,textAlign:'center',fontSize:18,fontFamily:'Noto Sans KR,sans-serif',lineHeight:1.6,background:'transparent',border:'1px solid var(--bd)',borderRadius:8,color:'var(--tx)',padding:10,resize:'vertical',outline:'none'}}/>
+        <textarea value={buf} onChange={e=>{
+          // Sửa tay: coi như phần đã chốt, và bỏ qua kết quả cũ của phiên hiện tại.
+          committedRef.current=e.target.value; sessionRef.current=''; baseIdxRef.current=lenRef.current;
+          bufRef.current=e.target.value; setBuf(e.target.value); clearSilence();
+        }} placeholder="Bấm mic rồi nói. Ngừng nói là tự chấm — đuôi câu chưa xong thì máy chờ lâu hơn." style={{width:'100%',minHeight:60,textAlign:'center',fontSize:18,fontFamily:'Noto Sans KR,sans-serif',lineHeight:1.6,background:'transparent',border:'1px solid var(--bd)',borderRadius:8,color:'var(--tx)',padding:10,resize:'vertical',outline:'none'}}/>
+        {wait
+          ?<div style={{fontSize:12,color:'var(--am)',display:'flex',alignItems:'center',gap:8}}>
+            <span style={{display:'inline-block',width:6,height:6,borderRadius:'50%',background:'var(--am)',animation:'pd 1s infinite'}}/>
+            Chờ {(Math.max(0,wait.until-Date.now())/1000).toFixed(1)}s / {(wait.ms/1000).toFixed(1)}s — {wait.reason}
+          </div>
+          :<div style={{fontSize:12,color:'var(--t3)'}}>{isOn?'Đang nghe, chưa đặt hẹn chốt':'Chưa bắt đầu'}</div>}
         <div style={{fontSize:12,color:'var(--t3)'}}>Loopback AG01 + Chrome{active>0?' · đang xử lý '+active+'/'+MAX_CONCURRENT:''}</div>
       </div>
       {results.length>0&&<><div style={{fontSize:11,color:'var(--t3)',textTransform:'uppercase',letterSpacing:'.08em'}}>Kết quả phân tích</div><div style={{display:'flex',flexDirection:'column',gap:12}}>{results.map(r=>(
