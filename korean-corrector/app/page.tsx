@@ -17,6 +17,10 @@ interface RI {
   deepLoading: boolean;
 }
 interface Job { id: number; text: string; context: string[] }
+interface LogLine { n: number; t: number; tag: string; msg: string }
+
+const LOG_MAX = 400;
+const DUP_MS = 10000; // chan submit trung text trong 10s
 
 const MAX_CONCURRENT = 2;
 const CONTEXT_SIZE = 3;
@@ -28,12 +32,13 @@ const MS_FINISHED = 1200;   // cau da tron, chot nhanh
 const MS_REORDER = 1500;    // dao trat tu, phan duoi ngan
 const MS_DEFAULT = 2000;
 
-// Lien tu noi ve / tro tu -> cau chua het
-const CONN_TAIL = ['고','서','는데','은데','니까','면','지만','거나','려고','면서','다가','는지',
-  '이','가','은','는','을','를','에','에서','로','으로','도','만','와','과','하고','랑','이랑',
-  '의','부터','까지','처럼','보다','한테','에게','께'];
+// LIEN TU noi ve: ve cau con dang do, nguoi noi chac chan chua dut y.
+const CONJ_TAIL = ['고','서','는데','은데','니까','면','지만','거나','려고','면서','다가','는지'];
 // Cap [phu am cuoi, phan con lai] cho duoi viet bang jamo: ㄴ데
-const CONN_JONG: [string, string][] = [['ㄴ', '데']];
+const CONJ_JONG: [string, string][] = [['ㄴ', '데']];
+// TRO TU gan vao danh tu. Cung cho 4000ms, nhung luat dao trat tu duoc phep de len.
+const PART_TAIL = ['이','가','은','는','을','를','에','에서','로','으로','도','만','와','과','하고','랑','이랑',
+  '의','부터','까지','처럼','보다','한테','에게','께'];
 
 // Duoi cau hoan chinh
 const END_TAIL = ['요','습니다','습니까','죠','네요','군요','거든요','잖아요','을까요','을게요',
@@ -59,23 +64,25 @@ function jong(ch: string): string {
   return JONGSEONG[c % 28];
 }
 
-type Kind = 'end' | 'conn';
+type Kind = 'end' | 'conj' | 'part';
 interface Rule { tail: string; jong: string; kind: Kind; strong: boolean; w: number }
 
-const endRule = (tail: string, j: string): Rule => ({
-  tail, jong: j, kind: 'end', strong: !WEAK_END.includes(tail), w: tail.length + (j ? 1 : 0),
+const mkRule = (kind: Kind) => (tail: string, j: string): Rule => ({
+  tail, jong: j, kind, strong: kind === 'end' && !WEAK_END.includes(tail), w: tail.length + (j ? 1 : 0),
 });
-const connRule = (tail: string, j: string): Rule => ({
-  tail, jong: j, kind: 'conn', strong: false, w: tail.length + (j ? 1 : 0),
-});
+const endRule = mkRule('end');
+const conjRule = mkRule('conj');
+const partRule = mkRule('part');
+const isConn = (k?: Kind) => k === 'conj' || k === 'part';
 
 // Gop mot bang, sap theo do dai giam dan de duoi dai khop truoc duoi ngan
 // (vd 는데요 an ra duoi hoan chinh 요, khong phai lien tu 는데).
 const RULES: Rule[] = [
   ...END_TAIL.map(t => endRule(t, '')),
   ...END_JONG.map(([j, t]) => endRule(t, j)),
-  ...CONN_TAIL.map(t => connRule(t, '')),
-  ...CONN_JONG.map(([j, t]) => connRule(t, j)),
+  ...CONJ_TAIL.map(t => conjRule(t, '')),
+  ...CONJ_JONG.map(([j, t]) => conjRule(t, j)),
+  ...PART_TAIL.map(t => partRule(t, '')),
 ].sort((a, b) => b.w - a.w);
 
 function matchTail(word: string): Rule | null {
@@ -116,15 +123,22 @@ function decideSilence(text: string): Wait {
   // dung de mot am tiet rac keo nguong tu 4000ms xuong 1200ms. Bo doan nay neu thay cat nham.
   if (m?.kind === 'end' && !m.strong && last.length === 1 && words.length >= 2) {
     const prev = matchTail(words[words.length - 2]);
-    if (prev?.kind === 'conn') {
-      return { ms: MS_UNFINISHED, reason: 'đuôi "' + prev.tail + '" chưa hết câu, bỏ qua "' + last + '" (nhiễu?)' };
+    if (isConn(prev?.kind)) {
+      return { ms: MS_UNFINISHED, reason: 'đuôi "' + prev!.tail + '" chưa hết câu, bỏ qua "' + last + '" (nhiễu?)' };
     }
   }
 
   if (m?.kind === 'end') return { ms: MS_FINISHED, reason: 'đuôi "' + m.tail + '" — câu đã trọn' };
+
+  // LIEN TU thang moi luat: ve cau dang do thi du truoc do co cau tron cung phai cho.
+  // "안녕하세요 만나서 반갑고" -> 4000ms, khong phai 1500ms dao trat tu.
+  if (m?.kind === 'conj') return { ms: MS_UNFINISHED, reason: 'liên từ "' + m.tail + '" — vế câu còn dở' };
+
+  // Dao trat tu chi duoc de len luat TRO TU (dung nhu spec: "ưu tiên hơn luật trợ từ").
   const pivot = reorderPivot(words);
-  if (pivot) return { ms: MS_REORDER, reason: 'đảo trật tự sau "' + pivot + '"' }; // uu tien hon luat tro tu 4000ms
-  if (m?.kind === 'conn') return { ms: MS_UNFINISHED, reason: 'đuôi "' + m.tail + '" — câu chưa hết' };
+  if (pivot) return { ms: MS_REORDER, reason: 'đảo trật tự sau "' + pivot + '"' };
+
+  if (m?.kind === 'part') return { ms: MS_UNFINISHED, reason: 'trợ từ "' + m.tail + '" — câu chưa hết' };
   return { ms: MS_DEFAULT, reason: 'không rõ đuôi "' + last + '"' };
 }
 
@@ -135,6 +149,16 @@ function getSilenceMs(text: string): number {
 // Ghep van ban giua cac phien nhan dang, bo khoang trang thua.
 function joinText(a: string, b: string): string {
   return [a.trim(), b.trim()].filter(Boolean).join(' ');
+}
+
+function logColor(tag: string): string {
+  if (tag === 'FIRE') return 'var(--rd)';
+  if (tag === 'CHẶN TRÙNG') return 'var(--am)';
+  if (tag === 'submit' || tag === 'thẻ mới' || tag === 'gộp câu') return 'var(--gn)';
+  if (tag.startsWith('timer')) return 'var(--am)';
+  if (tag === 'onresult') return 'var(--bl)';
+  if (tag === 'onerror' || tag === 'restart lỗi') return 'var(--rd)';
+  return 'var(--t2)';
 }
 
 // Cau bat dau bang dai tu chu ngu hoac lien tu mo cau -> cau moi, khong noi.
@@ -150,6 +174,8 @@ export default function Home() {
   const [active, setActive] = useState(0);
   const [wait, setWait] = useState<{ ms: number; reason: string; until: number } | null>(null);
   const [, forceTick] = useState(0);
+  const [logOn, setLogOn] = useState(true);
+  const [logLines, setLogLines] = useState<LogLine[]>([]);
 
   const recogRef = useRef<any>(null);
   const isOnRef = useRef(false);
@@ -166,12 +192,26 @@ export default function Home() {
   const activeRef = useRef(0);
   const ctrlRef = useRef<Map<number, AbortController>>(new Map());
   const lastRef = useRef<{ id: number; text: string; at: number; context: string[]; sealed: boolean } | null>(null);
+  const logBoxRef = useRef<HTMLDivElement>(null);
+  const logRef = useRef<LogLine[]>([]);
+  const logSeqRef = useRef(0);
+  const t0Ref = useRef(0);
+  const lastSubmitRef = useRef<{ text: string; at: number } | null>(null);
   const fireRef = useRef<(seal?: boolean, reason?: string) => void>(() => {});
   const drainRef = useRef<() => void>(() => {});
   const mkRef = useRef<(() => any) | null>(null);
 
   useEffect(() => { isOnRef.current = isOn }, [isOn]);
+  useEffect(() => { t0Ref.current = Date.now() }, []);
   useEffect(() => () => { if (silenceRef.current) clearTimeout(silenceRef.current) }, []);
+
+  // Nhật ký hiện thẳng trên màn hình — giáo viên không cần mở F12.
+  const addLog = useCallback((tag: string, msg: string) => {
+    const line: LogLine = { n: ++logSeqRef.current, t: Date.now() - t0Ref.current, tag, msg };
+    console.log('[' + line.t + 'ms][' + tag + '] ' + msg);
+    logRef.current = logRef.current.concat(line).slice(-LOG_MAX);
+    setLogLines(logRef.current);
+  }, []);
 
   const patch = useCallback((id: number, p: Partial<RI>) => {
     setResults(prev => prev.map(r => (r.id === id ? { ...r, ...p } : r)));
@@ -219,6 +259,16 @@ export default function Home() {
     const text = raw.trim();
     if (!text) return;
     const now = Date.now();
+
+    // Chốt chặn thẻ trùng: cùng một câu bị submit hai lần thì bỏ lần sau.
+    const ls = lastSubmitRef.current;
+    if (ls && ls.text === text && now - ls.at < DUP_MS) {
+      addLog('CHẶN TRÙNG', 'bỏ qua, y hệt thẻ cách đây ' + (now - ls.at) + 'ms: "' + text + '"');
+      return;
+    }
+    lastSubmitRef.current = { text, at: now };
+    addLog('submit', '"' + text + '"');
+
     const prev = lastRef.current;
 
     // Gộp câu: học viên ngắt giữa chừng rồi nói tiếp phần đuôi.
@@ -234,6 +284,8 @@ export default function Home() {
         fixLoading: true, deepLoading: true,
       });
       queueRef.current.push({ id: prev.id, text: merged, context: prev.context });
+      addLog('gộp câu', 'nối vào thẻ #' + prev.id + ' → "' + merged + '"');
+      lastSubmitRef.current = { text: merged, at: now };
       drainRef.current();
       return;
     }
@@ -244,29 +296,33 @@ export default function Home() {
     lastRef.current = { id, text, at: now, context, sealed: false };
     setResults(p => [{ id, text, fixLoading: true, deepLoading: true }, ...p]);
     queueRef.current.push({ id, text, context });
+    addLog('thẻ mới', '#' + id);
     drainRef.current();
-  }, [patch]);
+  }, [patch, addLog]);
 
   // Huy timer dang chay. Tang token de callback cu (neu da vao hang doi) tu bo qua.
   const clearSilence = useCallback(() => {
-    if (silenceRef.current) { clearTimeout(silenceRef.current); silenceRef.current = null }
+    if (silenceRef.current) {
+      clearTimeout(silenceRef.current); silenceRef.current = null;
+      addLog('timer hủy', '');
+    }
     armTokenRef.current++;
     setWait(null);
-  }, []);
+  }, [addLog]);
 
   // ĐÂY LÀ ĐƯỜNG DUY NHẤT tạo thẻ. Không nơi nào khác được gọi submit().
   // seal = học viên bấm "Xong câu": chốt luôn, câu sau không gộp vào nữa.
   const fire = useCallback((seal?: boolean, reason?: string) => {
     clearSilence();
     const text = bufRef.current;
-    if (!text.trim()) { console.log('[flush] bỏ qua, buffer rỗng (' + (reason || '?') + ')'); return }
-    console.log('[flush] ' + (reason || '?') + ' → ' + JSON.stringify(text));
+    if (!text.trim()) { addLog('fire', 'bỏ qua, buffer rỗng (' + (reason || '?') + ')'); return }
+    addLog('FIRE', (reason || '?') + ' → "' + text + '"');
     baseIdxRef.current = lenRef.current;
     committedRef.current = ''; sessionRef.current = '';
     bufRef.current = ''; setBuf('');
     submit(text);
     if (seal && lastRef.current) lastRef.current.sealed = true;
-  }, [clearSilence, submit]);
+  }, [clearSilence, submit, addLog]);
   fireRef.current = fire;
 
   // Mỗi lần Web Speech trả kết quả mới thì tính lại ngưỡng và đặt lại timer.
@@ -277,11 +333,12 @@ export default function Home() {
     silenceRef.current = setTimeout(() => {
       silenceRef.current = null;
       // Timer cũ đã bị thay bằng timer mới thì không được chốt.
-      if (token !== armTokenRef.current) { console.log('[timer] bỏ qua timer cũ'); return }
+      if (token !== armTokenRef.current) { addLog('timer cũ', 'bỏ qua'); return }
       fireRef.current(false, 'timer ' + ms + 'ms — ' + reason);
     }, ms);
+    addLog('timer đặt', ms + 'ms — ' + reason);
     setWait({ ms, reason, until: Date.now() + ms });
-  }, []);
+  }, [addLog]);
 
   const mkRecog = useCallback(() => {
     const S = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -292,7 +349,7 @@ export default function Home() {
     // Phiên mới: chỉ reset chỉ số kết quả của phiên, KHÔNG đụng vào buffer.
     r.onstart = () => {
       baseIdxRef.current = 0; lenRef.current = 0; sessionRef.current = '';
-      console.log('[speech] onstart — giữ buffer: ' + JSON.stringify(committedRef.current));
+      addLog('onstart', 'giữ buffer: "' + committedRef.current + '"');
     };
 
     r.onresult = (e: any) => {
@@ -304,27 +361,39 @@ export default function Home() {
       // ...rồi nối với phần đã nói ở các phiên trước, để ngưỡng đọc trên câu ĐẦY ĐỦ.
       const full = joinText(committedRef.current, session);
       bufRef.current = full; setBuf(full);
+      const isFinal = e.results.length > 0 && !!e.results[e.results.length - 1].isFinal;
+      const d = decideSilence(full);
+      addLog('onresult', 'isFinal=' + isFinal + ' n=' + e.results.length + ' base=' + baseIdxRef.current
+        + ' | "' + full + '" → ' + d.ms + 'ms (' + d.reason + ')');
       if (full.trim()) armSilence(full);
     };
 
-    // Chrome tự kết thúc phiên sau vài giây im lặng. Ba sự kiện dưới đây
+    // Chrome tự kết thúc phiên sau vài giây im lặng. Các sự kiện dưới đây
     // TUYỆT ĐỐI không được chốt câu: giữ nguyên buffer và timer đang chạy.
-    r.onspeechend = () => console.log('[speech] onspeechend — không flush');
-    r.onaudioend = () => console.log('[speech] onaudioend — không flush');
-    r.onerror = (e: any) => console.log('[speech] onerror ' + (e?.error || '?') + ' — không flush');
+    r.onspeechend = () => addLog('onspeechend', 'không flush');
+    r.onaudioend = () => addLog('onaudioend', 'không flush');
+    r.onerror = (e: any) => addLog('onerror', (e?.error || '?') + ' — không flush');
     r.onend = () => {
       // Dồn phần vừa nghe được sang committed để phiên sau không ghi đè mất.
       committedRef.current = joinText(committedRef.current, sessionRef.current);
       sessionRef.current = '';
       bufRef.current = committedRef.current;
-      console.log('[speech] onend — không flush, timer '
-        + (silenceRef.current ? 'vẫn chạy' : 'không có')
-        + ', giữ buffer: ' + JSON.stringify(bufRef.current));
-      if (isOnRef.current) setTimeout(() => { try { r.start() } catch (e) {} }, 200);
+      addLog('onend', 'không flush, timer ' + (silenceRef.current ? 'vẫn chạy' : 'không có')
+        + ', giữ buffer: "' + bufRef.current + '"');
+      if (isOnRef.current) setTimeout(() => {
+        addLog('restart', 'gọi start()');
+        try { r.start() } catch (err: any) { addLog('restart lỗi', err?.message || String(err)) }
+      }, 200);
     };
     return r;
-  }, [armSilence]);
+  }, [armSilence, addLog]);
   mkRef.current = mkRecog;
+
+  // Nhật ký luôn cuộn xuống dòng mới nhất.
+  useEffect(() => {
+    const b = logBoxRef.current;
+    if (logOn && b) b.scrollTop = b.scrollHeight;
+  }, [logLines, logOn]);
 
   // Đếm ngược cho dòng trạng thái "Chờ Xs".
   useEffect(() => {
@@ -355,7 +424,10 @@ export default function Home() {
     <style jsx global>{':root{--bg:#0f0f11;--sf:#1a1a1e;--sf2:#222228;--bd:rgba(255,255,255,.07);--ac:#7c6cfa;--rd:#f87171;--rb:rgba(248,113,113,.08);--gn:#4ade80;--gb:rgba(74,222,128,.08);--pp:#c084fc;--pb:rgba(192,132,252,.08);--bl:#60a5fa;--bb:rgba(96,165,250,.08);--am:#fbbf24;--tx:#e8e8f0;--t2:#8888a0;--t3:#555568}*{box-sizing:border-box;margin:0;padding:0}body{font-family:Be Vietnam Pro,sans-serif;background:var(--bg);color:var(--tx);min-height:100vh}@keyframes pd{0%,100%{opacity:1;box-shadow:0 0 0 0 rgba(248,113,113,.4)}50%{opacity:.7;box-shadow:0 0 0 6px rgba(248,113,113,0)}}@keyframes mp{0%,100%{box-shadow:0 0 0 0 rgba(248,113,113,.2)}50%{box-shadow:0 0 0 12px rgba(248,113,113,0)}}@keyframes si{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}@keyframes sk{0%,100%{opacity:.3}50%{opacity:.75}}'}</style>
     <header style={{padding:'18px 28px',borderBottom:'1px solid var(--bd)',display:'flex',alignItems:'center',justifyContent:'space-between',background:'var(--sf)'}}>
       <div style={{display:'flex',alignItems:'center',gap:10}}><div style={{width:8,height:8,borderRadius:'50%',background:isOn?'#f87171':'var(--ac)',animation:isOn?'pd 1.2s infinite':'none'}}/><div><div style={{fontSize:14,fontWeight:600}}>Trợ lý sửa lỗi tiếng Hàn</div><div style={{fontSize:11,color:'var(--t3)'}}>Xirian</div></div></div>
-      <div style={{fontSize:11,padding:'4px 10px',borderRadius:20,border:isOn?'1px solid rgba(248,113,113,.3)':'1px solid var(--bd)',color:isOn?'#f87171':'var(--t2)',background:isOn?'rgba(248,113,113,.08)':'var(--sf2)'}}>{isOn?'Đang nghe...':'Chưa bắt đầu'}</div>
+      <div style={{display:'flex',alignItems:'center',gap:10}}>
+        <button onClick={()=>setLogOn(v=>!v)} style={{fontSize:11,padding:'4px 10px',borderRadius:20,border:'1px solid var(--bd)',background:logOn?'var(--pb)':'var(--sf2)',color:logOn?'var(--pp)':'var(--t3)',cursor:'pointer'}}>Nhật ký {logOn?'▾':'▸'}</button>
+        <div style={{fontSize:11,padding:'4px 10px',borderRadius:20,border:isOn?'1px solid rgba(248,113,113,.3)':'1px solid var(--bd)',color:isOn?'#f87171':'var(--t2)',background:isOn?'rgba(248,113,113,.08)':'var(--sf2)'}}>{isOn?'Đang nghe...':'Chưa bắt đầu'}</div>
+      </div>
     </header>
     <main style={{flex:1,display:'flex',flexDirection:'column',padding:'24px 28px',gap:20,maxWidth:860,width:'100%',margin:'0 auto'}}>
       <div style={{background:'var(--sf)',border:'1px solid var(--bd)',borderRadius:16,padding:28,display:'flex',flexDirection:'column',alignItems:'center',gap:16}}>
@@ -377,6 +449,23 @@ export default function Home() {
           :<div style={{fontSize:12,color:'var(--t3)'}}>{isOn?'Đang nghe, chưa đặt hẹn chốt':'Chưa bắt đầu'}</div>}
         <div style={{fontSize:12,color:'var(--t3)'}}>Loopback AG01 + Chrome{active>0?' · đang xử lý '+active+'/'+MAX_CONCURRENT:''}</div>
       </div>
+      {logOn&&<div style={{background:'var(--sf)',border:'1px solid var(--bd)',borderRadius:12,overflow:'hidden'}}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'8px 12px',borderBottom:'1px solid var(--bd)',background:'var(--sf2)'}}>
+          <span style={{fontSize:11,fontWeight:600,color:'var(--t2)',textTransform:'uppercase',letterSpacing:'.08em'}}>Nhật ký · {logLines.length} dòng</span>
+          <button onClick={()=>{logRef.current=[];setLogLines([])}} style={{fontSize:11,padding:'3px 10px',borderRadius:6,border:'1px solid var(--bd)',background:'transparent',color:'var(--t2)',cursor:'pointer'}}>Xoá</button>
+        </div>
+        <div ref={logBoxRef} style={{maxHeight:260,overflowY:'auto',padding:'8px 12px',fontFamily:'ui-monospace,Menlo,Consolas,monospace',fontSize:11,lineHeight:1.7}}>
+          {logLines.length===0
+            ?<div style={{color:'var(--t3)'}}>Chưa có sự kiện. Bấm mic rồi nói thử.</div>
+            :logLines.map(l=>(
+              <div key={l.n} style={{whiteSpace:'pre-wrap',wordBreak:'break-word'}}>
+                <span style={{color:'var(--t3)'}}>{String(l.t).padStart(6,' ')}ms </span>
+                <span style={{color:logColor(l.tag),fontWeight:600}}>{l.tag}</span>
+                {l.msg?<span style={{color:'var(--tx)'}}> {l.msg}</span>:null}
+              </div>
+            ))}
+        </div>
+      </div>}
       {results.length>0&&<><div style={{fontSize:11,color:'var(--t3)',textTransform:'uppercase',letterSpacing:'.08em'}}>Kết quả phân tích</div><div style={{display:'flex',flexDirection:'column',gap:12}}>{results.map(r=>(
         <div key={r.id} style={{background:'var(--sf)',border:'1px solid var(--bd)',borderRadius:12,overflow:'hidden',animation:'si .25s ease'}}>
           <R l="🔴 Gốc" t="orig">
