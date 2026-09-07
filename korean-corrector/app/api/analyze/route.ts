@@ -1,53 +1,25 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { buildSystemPrompt, buildUserMessage, readSetup } from '@/lib/prompt';
+import type { Mode } from '@/lib/prompt';
+import { countPatterns, getGrammarPool } from '@/lib/grammar';
 
 export const runtime = 'edge';
-
-type Mode = 'fix' | 'deep';
 
 // Sonnet 5 tu choi temperature/top_p/top_k khac mac dinh (loi 400) va bat adaptive
 // thinking khi khong khai bao. Tat thinking de thinking khong an het max_tokens
 // (max_tokens la tran cho ca thinking lan text) va de giu do tre thap.
 const CONFIG: Record<Mode, { model: string; max_tokens: number; extra: Record<string, unknown> }> = {
-  fix: { model: 'claude-haiku-4-5-20251001', max_tokens: 500, extra: { temperature: 0 } },
-  deep: { model: 'claude-sonnet-5', max_tokens: 1000, extra: { thinking: { type: 'disabled' } } },
+  fix: { model: 'claude-haiku-4-5-20251001', max_tokens: 700, extra: { temperature: 0 } },
+  deep: { model: 'claude-sonnet-5', max_tokens: 1200, extra: { thinking: { type: 'disabled' } } },
 };
 
-function contextBlock(context: string[]): string {
-  if (!context.length) return '';
-  return (
-    'Ngữ cảnh hội thoại gần đây (CHỈ để hiểu mạch câu chuyện, TUYỆT ĐỐI không phân tích hay sửa các câu này):\n' +
-    context.map((c) => '- ' + c).join('\n') +
-    '\n\n'
-  );
-}
-
-function buildPrompt(mode: Mode, text: string, context: string[]): string {
-  const head =
-    'Bạn là giáo viên tiếng Hàn dạy học viên người Việt.\n\n' + contextBlock(context);
-
-  if (mode === 'fix') {
-    return (
-      head +
-      'Câu cần sửa: ' +
-      text +
-      '\n\n' +
-      'Sửa lỗi ngữ pháp, chính tả, cách chia đuôi câu. Nếu câu đã đúng thì corrected chính là câu đó và errors là mảng rỗng.\n' +
-      'Trường "why" phải viết bằng tiếng Việt có dấu, ngắn gọn một câu.\n' +
-      'CHỈ trả về JSON thuần, không markdown, không giải thích thêm:\n' +
-      '{"corrected":"câu đã sửa","errors":[{"wrong":"phần sai","right":"phần đúng","why":"lý do bằng tiếng Việt"}]}'
-    );
+function extractJson(raw: string): any {
+  const start = raw.indexOf('{');
+  const end = raw.lastIndexOf('}');
+  if (start === -1 || end === -1 || end <= start) {
+    throw new Error('Phản hồi không chứa JSON');
   }
-
-  return (
-    head +
-    'Câu của học viên: ' +
-    text +
-    '\n\n' +
-    'Đưa ra 2-3 cách diễn đạt tự nhiên hơn (upgrades), 2 câu ví dụ khác cùng ý (examples), và ghi chú ngữ pháp 2-4 câu.\n' +
-    'Các trường "vi" và "note" phải viết bằng tiếng Việt có dấu.\n' +
-    'CHỈ trả về JSON thuần, không markdown, không giải thích thêm:\n' +
-    '{"upgrades":[{"ko":"","vi":""}],"examples":[{"ko":"","vi":""}],"note":"ghi chú ngữ pháp bằng tiếng Việt"}'
-  );
+  return JSON.parse(raw.slice(start, end + 1));
 }
 
 // Body loi cua Anthropic: {"type":"error","error":{"type":"...","message":"..."}}
@@ -68,15 +40,6 @@ function viError(status: number, detail: string): string {
   return message || 'API ' + status;
 }
 
-function extractJson(raw: string): any {
-  const start = raw.indexOf('{');
-  const end = raw.lastIndexOf('}');
-  if (start === -1 || end === -1 || end <= start) {
-    throw new Error('Phản hồi không chứa JSON');
-  }
-  return JSON.parse(raw.slice(start, end + 1));
-}
-
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -90,12 +53,33 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Thiếu câu cần phân tích' }, { status: 400 });
     }
 
+    const setup = readSetup(body);
+    const cfg = CONFIG[mode];
+    const system = buildSystemPrompt(setup);
+    const user = buildUserMessage(mode, text, context);
+
+    // dryRun: xem prompt dung ra sao mà không gọi API, không tốn tiền.
+    // Dùng để kiểm tra cấu hình lớp bằng curl.
+    if (body?.dryRun === true) {
+      return NextResponse.json({
+        dryRun: true,
+        model: cfg.model,
+        setup,
+        poolPatterns:
+          setup.curriculum === 'xirian' && setup.lesson !== null
+            ? countPatterns(getGrammarPool(setup.level, setup.lesson))
+            : 0,
+        systemChars: system.length,
+        system,
+        user,
+      });
+    }
+
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) {
       return NextResponse.json({ error: 'Chưa cấu hình ANTHROPIC_API_KEY' }, { status: 500 });
     }
 
-    const cfg = CONFIG[mode];
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -107,7 +91,10 @@ export async function POST(req: NextRequest) {
         model: cfg.model,
         max_tokens: cfg.max_tokens,
         ...cfg.extra,
-        messages: [{ role: 'user', content: buildPrompt(mode, text, context) }],
+        // Hồ sơ ngữ pháp dài và không đổi suốt buổi học -> cache lại,
+        // các lần gọi sau trong buổi chỉ trả ~10% giá cho phần này.
+        system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
+        messages: [{ role: 'user', content: user }],
       }),
     });
 
@@ -119,7 +106,23 @@ export async function POST(req: NextRequest) {
 
     const data = await res.json();
     const raw: string = data?.content?.[0]?.text ?? '';
-    return NextResponse.json(extractJson(raw));
+    const parsed = extractJson(raw);
+
+    const u = data?.usage;
+    if (u) {
+      console.log(
+        `[usage ${mode}] in=${u.input_tokens} cache_write=${u.cache_creation_input_tokens ?? 0} ` +
+          `cache_read=${u.cache_read_input_tokens ?? 0} out=${u.output_tokens}`
+      );
+      parsed._usage = {
+        input: u.input_tokens,
+        cache_write: u.cache_creation_input_tokens ?? 0,
+        cache_read: u.cache_read_input_tokens ?? 0,
+        output: u.output_tokens,
+      };
+    }
+
+    return NextResponse.json(parsed);
   } catch (e: any) {
     console.error('analyze error:', e?.message);
     return NextResponse.json({ error: e?.message || 'Lỗi không xác định' }, { status: 500 });

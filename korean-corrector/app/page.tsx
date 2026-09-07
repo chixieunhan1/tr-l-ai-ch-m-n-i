@@ -1,5 +1,7 @@
 'use client';
 import { useState, useRef, useCallback, useEffect } from 'react';
+import { LEVEL_LABEL, LEVEL_ORDER, getLesson, lessonCount } from '@/lib/grammar';
+import type { LevelId } from '@/lib/grammar';
 
 interface AE { wrong: string; right: string; why: string }
 interface KV { ko: string; vi: string }
@@ -23,8 +25,57 @@ const LOG_MAX = 400;
 const DUP_MS = 10000; // chan submit trung text trong 10s
 
 const MAX_CONCURRENT = 2;
-const CONTEXT_SIZE = 3;
+const CONTEXT_SIZE = 5;
 const MERGE_MS = 3000;
+
+type Curriculum = 'xirian' | 'other';
+type Register = 'auto' | 'banmal' | 'jondaetmal';
+interface Setup {
+  level: LevelId;
+  curriculum: Curriculum;
+  lesson: number;
+  topic: string;
+  register: Register;
+}
+const SETUP_KEY = 'xirian.setup.v1';
+const DEFAULT_SETUP: Setup = {
+  level: 'sc1', curriculum: 'xirian', lesson: 1, topic: '', register: 'auto',
+};
+const REGISTER_LABEL: Record<Register, string> = {
+  auto: 'Tự động',
+  banmal: 'Bạn bè, người thân (반말)',
+  jondaetmal: 'Người lớn, thầy cô, người lạ (존댓말)',
+};
+
+function loadSetup(): Setup | null {
+  try {
+    const raw = localStorage.getItem(SETUP_KEY);
+    if (!raw) return null;
+    const s = JSON.parse(raw);
+    if (!LEVEL_ORDER.includes(s?.level)) return null;
+    return {
+      level: s.level,
+      curriculum: s.curriculum === 'other' ? 'other' : 'xirian',
+      lesson: Math.min(Math.max(Number(s.lesson) || 1, 1), lessonCount(s.level)),
+      topic: typeof s.topic === 'string' ? s.topic : '',
+      register: s.register === 'banmal' || s.register === 'jondaetmal' ? s.register : 'auto',
+    };
+  } catch (e) { return null }
+}
+
+// Dòng tóm tắt hiện khi thanh cài đặt đã thu lại.
+function setupSummary(s: Setup): string {
+  const bits = [LEVEL_LABEL[s.level]];
+  if (s.curriculum === 'xirian') {
+    const l = getLesson(s.level, s.lesson);
+    bits.push('서울대 bài ' + s.lesson + (l ? ' · ' + l.title : ''));
+  } else {
+    bits.push('giáo trình khác');
+  }
+  bits.push(REGISTER_LABEL[s.register]);
+  if (s.topic.trim()) bits.push('“' + s.topic.trim() + '”');
+  return bits.join('  ·  ');
+}
 
 // Nguong im lang theo duoi cau tieng Han.
 const MS_UNFINISHED = 4000; // con dang noi do, cho lau
@@ -174,6 +225,15 @@ function joinText(a: string, b: string): string {
   return [a.trim(), b.trim()].filter(Boolean).join(' ');
 }
 
+const SEL: React.CSSProperties = {
+  fontSize: 13, padding: '7px 10px', borderRadius: 8, border: '1px solid var(--bd)',
+  background: 'var(--sf2)', color: 'var(--tx)', outline: 'none', cursor: 'pointer',
+};
+const LAB: React.CSSProperties = {
+  fontSize: 10, color: 'var(--t3)', marginBottom: 4, display: 'block',
+  textTransform: 'uppercase', letterSpacing: '.06em',
+};
+
 function logColor(tag: string): string {
   if (tag === 'FIRE') return 'var(--rd)';
   if (tag === 'CHẶN TRÙNG') return 'var(--am)';
@@ -197,6 +257,8 @@ export default function Home() {
   const [active, setActive] = useState(0);
   const [wait, setWait] = useState<{ ms: number; reason: string; until: number } | null>(null);
   const [, forceTick] = useState(0);
+  const [setup, setSetup] = useState<Setup>(DEFAULT_SETUP);
+  const [setupOpen, setSetupOpen] = useState(true);
   const [debug, setDebug] = useState(false);   // chi bat khi URL co ?debug=1
   const [logOn, setLogOn] = useState(true);    // thu/mo bang trong che do debug
   const [logLines, setLogLines] = useState<LogLine[]>([]);
@@ -216,6 +278,7 @@ export default function Home() {
   const activeRef = useRef(0);
   const ctrlRef = useRef<Map<number, AbortController>>(new Map());
   const lastRef = useRef<{ id: number; text: string; at: number; context: string[]; sealed: boolean } | null>(null);
+  const setupRef = useRef<Setup>(DEFAULT_SETUP);
   const debugRef = useRef(false);
   const logBoxRef = useRef<HTMLDivElement>(null);
   const logRef = useRef<LogLine[]>([]);
@@ -228,6 +291,23 @@ export default function Home() {
 
   useEffect(() => { isOnRef.current = isOn }, [isOn]);
   useEffect(() => { t0Ref.current = Date.now() }, []);
+
+  // Cài đặt buổi học: đọc localStorage sau khi mount (tránh lệch hydrate).
+  // Đã có cài đặt cũ thì thu thanh lại luôn, chỉ hiện một dòng tóm tắt.
+  useEffect(() => {
+    const s = loadSetup();
+    if (s) { setSetup(s); setupRef.current = s; setSetupOpen(false) }
+  }, []);
+
+  const updateSetup = useCallback((patch: Partial<Setup>) => {
+    setSetup(prev => {
+      const next = { ...prev, ...patch };
+      if (patch.level) next.lesson = Math.min(next.lesson, lessonCount(patch.level));
+      setupRef.current = next;
+      try { localStorage.setItem(SETUP_KEY, JSON.stringify(next)) } catch (e) {}
+      return next;
+    });
+  }, []);
 
   // Nhật ký chỉ bật khi mở app với ?debug=1. Đọc trong effect để khớp hydrate.
   useEffect(() => {
@@ -256,7 +336,14 @@ export default function Home() {
     const r = await fetch('/api/analyze', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, mode, context }),
+      body: JSON.stringify({
+        text, mode, context,
+        level: setupRef.current.level,
+        curriculum: setupRef.current.curriculum,
+        lesson: setupRef.current.curriculum === 'xirian' ? setupRef.current.lesson : null,
+        topic: setupRef.current.topic,
+        register: setupRef.current.register,
+      }),
       signal,
     });
     if (!r.ok) {
@@ -454,6 +541,11 @@ export default function Home() {
   }, [isOn, clearSilence]);
 
   const has = !!buf.trim();
+  // Bỏ trống "Bài hôm nay" thì lấy luôn tiêu đề + pattern của bài đang học làm gợi ý.
+  const lessonNow = setup.curriculum === 'xirian' ? getLesson(setup.level, setup.lesson) : undefined;
+  const autoTopic = lessonNow
+    ? `Tự động: Bài ${lessonNow.number} — ${lessonNow.title} — ${lessonNow.patterns.map(p => p.form).join(', ')}`
+    : '';
 
   return (<>
     <style jsx global>{':root{--bg:#0f0f11;--sf:#1a1a1e;--sf2:#222228;--bd:rgba(255,255,255,.07);--ac:#7c6cfa;--rd:#f87171;--rb:rgba(248,113,113,.08);--gn:#4ade80;--gb:rgba(74,222,128,.08);--pp:#c084fc;--pb:rgba(192,132,252,.08);--bl:#60a5fa;--bb:rgba(96,165,250,.08);--am:#fbbf24;--tx:#e8e8f0;--t2:#8888a0;--t3:#555568}*{box-sizing:border-box;margin:0;padding:0}body{font-family:Be Vietnam Pro,sans-serif;background:var(--bg);color:var(--tx);min-height:100vh}@keyframes pd{0%,100%{opacity:1;box-shadow:0 0 0 0 rgba(248,113,113,.4)}50%{opacity:.7;box-shadow:0 0 0 6px rgba(248,113,113,0)}}@keyframes mp{0%,100%{box-shadow:0 0 0 0 rgba(248,113,113,.2)}50%{box-shadow:0 0 0 12px rgba(248,113,113,0)}}@keyframes si{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}@keyframes sk{0%,100%{opacity:.3}50%{opacity:.75}}'}</style>
@@ -465,6 +557,47 @@ export default function Home() {
       </div>
     </header>
     <main style={{flex:1,display:'flex',flexDirection:'column',padding:'24px 28px',gap:20,maxWidth:860,width:'100%',margin:'0 auto'}}>
+      <div style={{background:'var(--sf)',border:'1px solid var(--bd)',borderRadius:12,overflow:'hidden'}}>
+        {setupOpen
+          ?<div style={{padding:'14px 16px',display:'flex',flexWrap:'wrap',gap:14,alignItems:'flex-end'}}>
+            <div>
+              <label style={LAB}>Lớp</label>
+              <select value={setup.level} onChange={e=>updateSetup({level:e.target.value as LevelId})} style={SEL}>
+                {LEVEL_ORDER.map(l=><option key={l} value={l}>{LEVEL_LABEL[l]}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={LAB}>Giáo trình</label>
+              <select value={setup.curriculum} onChange={e=>updateSetup({curriculum:e.target.value as Curriculum})} style={SEL}>
+                <option value="xirian">Xirian (서울대)</option>
+                <option value="other">Khác</option>
+              </select>
+            </div>
+            {setup.curriculum==='xirian'&&<div>
+              <label style={LAB}>Đã học đến bài</label>
+              <select value={setup.lesson} onChange={e=>updateSetup({lesson:Number(e.target.value)})} style={SEL}>
+                {Array.from({length:lessonCount(setup.level)},(_,i)=>i+1).map(n=><option key={n} value={n}>Bài {n}</option>)}
+              </select>
+            </div>}
+            <div>
+              <label style={LAB}>Nói với ai</label>
+              <select value={setup.register} onChange={e=>updateSetup({register:e.target.value as Register})} style={SEL}>
+                {(['auto','banmal','jondaetmal'] as Register[]).map(r=><option key={r} value={r}>{REGISTER_LABEL[r]}</option>)}
+              </select>
+            </div>
+            <div style={{flex:'1 1 240px',minWidth:190}}>
+              <label style={LAB}>Bài hôm nay (tuỳ chọn)</label>
+              <input value={setup.topic} onChange={e=>updateSetup({topic:e.target.value})}
+                placeholder={autoTopic||'VD: Bài 15 — 여행 — -(으)면, -고 싶다'}
+                style={{...SEL,width:'100%',cursor:'text'}}/>
+            </div>
+            <button onClick={()=>setSetupOpen(false)} style={{...SEL,background:'var(--ac)',color:'#fff',border:'none',fontWeight:600,padding:'8px 18px'}}>Xong</button>
+          </div>
+          :<button onClick={()=>setSetupOpen(true)} title="Bấm để đổi cài đặt buổi học" style={{width:'100%',textAlign:'left',padding:'11px 16px',background:'transparent',border:'none',color:'var(--t2)',fontSize:12,cursor:'pointer',display:'flex',justifyContent:'space-between',alignItems:'center',gap:10}}>
+            <span>⚙️ {setupSummary(setup)}</span>
+            <span style={{color:'var(--ac)',flexShrink:0}}>Đổi</span>
+          </button>}
+      </div>
       <div style={{background:'var(--sf)',border:'1px solid var(--bd)',borderRadius:16,padding:28,display:'flex',flexDirection:'column',alignItems:'center',gap:16}}>
         <div style={{display:'flex',alignItems:'center',gap:20}}>
           <button onClick={toggleMic} style={{width:72,height:72,borderRadius:'50%',border:isOn?'1.5px solid #f87171':'1.5px solid var(--bd)',background:isOn?'rgba(248,113,113,.1)':'var(--sf2)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',animation:isOn?'mp 1.5s infinite':'none'}}><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke={isOn?'#f87171':'var(--t2)'} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><line x1="12" y1="19" x2="12" y2="22"/><line x1="8" y1="22" x2="16" y2="22"/></svg></button>
