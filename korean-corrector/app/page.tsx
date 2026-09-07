@@ -197,7 +197,8 @@ export default function Home() {
   const [active, setActive] = useState(0);
   const [wait, setWait] = useState<{ ms: number; reason: string; until: number } | null>(null);
   const [, forceTick] = useState(0);
-  const [logOn, setLogOn] = useState(true);
+  const [debug, setDebug] = useState(false);   // chi bat khi URL co ?debug=1
+  const [logOn, setLogOn] = useState(true);    // thu/mo bang trong che do debug
   const [logLines, setLogLines] = useState<LogLine[]>([]);
 
   const recogRef = useRef<any>(null);
@@ -215,6 +216,7 @@ export default function Home() {
   const activeRef = useRef(0);
   const ctrlRef = useRef<Map<number, AbortController>>(new Map());
   const lastRef = useRef<{ id: number; text: string; at: number; context: string[]; sealed: boolean } | null>(null);
+  const debugRef = useRef(false);
   const logBoxRef = useRef<HTMLDivElement>(null);
   const logRef = useRef<LogLine[]>([]);
   const logSeqRef = useRef(0);
@@ -226,12 +228,22 @@ export default function Home() {
 
   useEffect(() => { isOnRef.current = isOn }, [isOn]);
   useEffect(() => { t0Ref.current = Date.now() }, []);
+
+  // Nhật ký chỉ bật khi mở app với ?debug=1. Đọc trong effect để khớp hydrate.
+  useEffect(() => {
+    let on = false;
+    try { on = new URLSearchParams(window.location.search).get('debug') === '1' } catch (e) {}
+    debugRef.current = on;
+    setDebug(on);
+  }, []);
   useEffect(() => () => { if (silenceRef.current) clearTimeout(silenceRef.current) }, []);
 
   // Nhật ký hiện thẳng trên màn hình — giáo viên không cần mở F12.
   const addLog = useCallback((tag: string, msg: string) => {
     const line: LogLine = { n: ++logSeqRef.current, t: Date.now() - t0Ref.current, tag, msg };
     console.log('[' + line.t + 'ms][' + tag + '] ' + msg);
+    // Không debug thì không giữ dòng nào, cũng không render lại.
+    if (!debugRef.current) return;
     logRef.current = logRef.current.concat(line).slice(-LOG_MAX);
     setLogLines(logRef.current);
   }, []);
@@ -415,8 +427,8 @@ export default function Home() {
   // Nhật ký luôn cuộn xuống dòng mới nhất.
   useEffect(() => {
     const b = logBoxRef.current;
-    if (logOn && b) b.scrollTop = b.scrollHeight;
-  }, [logLines, logOn]);
+    if (debug && logOn && b) b.scrollTop = b.scrollHeight;
+  }, [logLines, logOn, debug]);
 
   // Đếm ngược cho dòng trạng thái "Chờ Xs".
   useEffect(() => {
@@ -448,7 +460,7 @@ export default function Home() {
     <header style={{padding:'18px 28px',borderBottom:'1px solid var(--bd)',display:'flex',alignItems:'center',justifyContent:'space-between',background:'var(--sf)'}}>
       <div style={{display:'flex',alignItems:'center',gap:10}}><div style={{width:8,height:8,borderRadius:'50%',background:isOn?'#f87171':'var(--ac)',animation:isOn?'pd 1.2s infinite':'none'}}/><div><div style={{fontSize:14,fontWeight:600}}>Trợ lý sửa lỗi tiếng Hàn</div><div style={{fontSize:11,color:'var(--t3)'}}>Xirian</div></div></div>
       <div style={{display:'flex',alignItems:'center',gap:10}}>
-        <button onClick={()=>setLogOn(v=>!v)} style={{fontSize:11,padding:'4px 10px',borderRadius:20,border:'1px solid var(--bd)',background:logOn?'var(--pb)':'var(--sf2)',color:logOn?'var(--pp)':'var(--t3)',cursor:'pointer'}}>Nhật ký {logOn?'▾':'▸'}</button>
+        {debug&&<button onClick={()=>setLogOn(v=>!v)} style={{fontSize:11,padding:'4px 10px',borderRadius:20,border:'1px solid var(--bd)',background:logOn?'var(--pb)':'var(--sf2)',color:logOn?'var(--pp)':'var(--t3)',cursor:'pointer'}}>Nhật ký {logOn?'▾':'▸'}</button>}
         <div style={{fontSize:11,padding:'4px 10px',borderRadius:20,border:isOn?'1px solid rgba(248,113,113,.3)':'1px solid var(--bd)',color:isOn?'#f87171':'var(--t2)',background:isOn?'rgba(248,113,113,.08)':'var(--sf2)'}}>{isOn?'Đang nghe...':'Chưa bắt đầu'}</div>
       </div>
     </header>
@@ -472,7 +484,7 @@ export default function Home() {
           :<div style={{fontSize:12,color:'var(--t3)'}}>{isOn?'Đang nghe, chưa đặt hẹn chốt':'Chưa bắt đầu'}</div>}
         <div style={{fontSize:12,color:'var(--t3)'}}>Loopback AG01 + Chrome{active>0?' · đang xử lý '+active+'/'+MAX_CONCURRENT:''}</div>
       </div>
-      {logOn&&<div style={{background:'var(--sf)',border:'1px solid var(--bd)',borderRadius:12,overflow:'hidden'}}>
+      {debug&&logOn&&<div style={{background:'var(--sf)',border:'1px solid var(--bd)',borderRadius:12,overflow:'hidden'}}>
         <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'8px 12px',borderBottom:'1px solid var(--bd)',background:'var(--sf2)'}}>
           <span style={{fontSize:11,fontWeight:600,color:'var(--t2)',textTransform:'uppercase',letterSpacing:'.08em'}}>Nhật ký · {logLines.length} dòng</span>
           <button onClick={()=>{logRef.current=[];setLogLines([])}} style={{fontSize:11,padding:'3px 10px',borderRadius:6,border:'1px solid var(--bd)',background:'transparent',color:'var(--t2)',cursor:'pointer'}}>Xoá</button>
