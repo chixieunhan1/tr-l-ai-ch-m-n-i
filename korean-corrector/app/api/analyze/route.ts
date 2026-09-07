@@ -50,6 +50,24 @@ function buildPrompt(mode: Mode, text: string, context: string[]): string {
   );
 }
 
+// Body loi cua Anthropic: {"type":"error","error":{"type":"...","message":"..."}}
+// Lay ca type lan message roi doi sang tieng Viet cho hoc vien hieu.
+function viError(status: number, detail: string): string {
+  let type = '';
+  let message = '';
+  try {
+    const j = JSON.parse(detail);
+    if (typeof j?.error?.type === 'string') type = j.error.type;
+    if (typeof j?.error?.message === 'string') message = j.error.message.trim();
+    else if (typeof j?.message === 'string') message = j.message.trim();
+  } catch (e) {}
+
+  const hay = (type + ' ' + message).toLowerCase();
+  if (hay.includes('credit')) return 'Tài khoản API hết credit, cần nạp thêm';
+  if (hay.includes('rate')) return 'Gọi quá nhanh, chờ chút';
+  return message || 'API ' + status;
+}
+
 function extractJson(raw: string): any {
   const start = raw.indexOf('{');
   const end = raw.lastIndexOf('}');
@@ -96,7 +114,7 @@ export async function POST(req: NextRequest) {
     if (!res.ok) {
       const detail = await res.text();
       console.error('Anthropic ' + res.status + ' (' + mode + '):', detail.slice(0, 300));
-      return NextResponse.json({ error: 'API ' + res.status }, { status: res.status });
+      return NextResponse.json({ error: viError(res.status, detail) }, { status: res.status });
     }
 
     const data = await res.json();
