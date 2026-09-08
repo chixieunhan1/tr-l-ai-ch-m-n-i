@@ -83,6 +83,23 @@ function registerRules(s: Setup): string {
   );
 }
 
+// Lay tu bang "5 mốc DỄ NHẦM NHẤT" trong data/grammar/grammar-by-lesson-sc1.md.
+// Ghi ro "Sơ cấp 1" o moi dong: lop TC1/TC2 cung co bai 9/10/11/12/14 cua rieng ho,
+// khong ghi ro thi ghi chu se dan nham sang sach khac.
+const CONFUSABLE =
+  '# Mốc dễ nhầm (mọi số bài dưới đây đều là bài của SƠ CẤP 1)\n' +
+  '- `-아서/어서` dạy HAI lần, hai nghĩa khác nhau: Sơ cấp 1 bài 10 = "rồi" (trình tự hành động) · Sơ cấp 1 bài 12 = "vì… nên" (nguyên nhân). Khi ghi chú phải dẫn đúng bài theo NGHĨA đang dùng trong câu, không được gộp làm một.\n' +
+  '- `못 V` (không thể): Sơ cấp 1 bài 12, KHÔNG phải bài 11. Bài 11 chỉ có `-지 마세요` (đừng).\n' +
+  '- `잘하다 / 못하다` (giỏi / không giỏi): Sơ cấp 1 bài 9 — khác hẳn `못 V` của bài 12.\n' +
+  '- `ㅡ 탈락` (아파요, 바빠요, 썼어요): Sơ cấp 1 bài 11.\n' +
+  '- `N한테/께` (cho ai): Sơ cấp 1 bài 14, KHÔNG phải bài 9. Bài 9 chỉ có `N의` (của).';
+
+const UPGRADE_RULE =
+  '# Gợi ý nâng cấp phải thực sự nâng\n' +
+  '- Mỗi câu ở phần "Nâng" phải khác câu đã sửa ít nhất MỘT cấu trúc ngữ pháp hoặc MỘT cách diễn đạt.\n' +
+  '- TUYỆT ĐỐI không lặp lại nguyên văn câu đã sửa làm gợi ý — kể cả gợi ý đầu tiên. ' +
+  'Nếu câu học viên vốn đã đúng và không còn gì để nâng theo đúng trình độ, hãy đổi cách diễn đạt chứ đừng chép lại câu cũ.';
+
 export function todayTopic(s: Setup): string {
   if (s.topic) return s.topic;
   if (s.curriculum !== 'xirian' || s.lesson === null) return '';
@@ -118,10 +135,14 @@ export function buildSystemPrompt(s: Setup): string {
     if (up.length) {
       parts.push('# Sắp học (chỉ được dùng tối đa 1 gợi ý, phải đánh dấu rõ)\n' + formatUpcomingForPrompt(up));
     }
+
+    // Chi co nghia khi duoc phep dan so bai (curriculum = xirian).
+    parts.push(CONFUSABLE);
   }
 
   // c. Cach sua theo cap
   parts.push('# Cách sửa cho ' + LEVEL_LABEL[s.level] + '\n' + LEVEL_RULES[s.level]);
+  parts.push(UPGRADE_RULE);
 
   // d. 반말 / 존댓말
   parts.push('# 반말 / 존댓말\n' + registerRules(s));

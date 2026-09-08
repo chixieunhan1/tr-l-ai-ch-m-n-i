@@ -89,6 +89,25 @@ check('fix mode yêu cầu register_detected', um.includes('register_detected'))
 check('deep mode không có register_detected', !buildUserMessage('deep', SENT, []).includes('register_detected'));
 check('không ngữ cảnh thì không có phần đầu', !buildUserMessage('fix', SENT, []).includes('vừa nói trước đó'));
 
+// --- Goi y nang cap + moc de nham -------------------------------------------
+console.log('\n[G] Gợi ý nâng cấp & Mốc dễ nhầm');
+for (const [nameLv, sys] of [['SC1', sa], ['TC1', sb], ['TC2/Khác', sc]] as const) {
+  check(nameLv + ': có luật "Nâng" phải khác câu sửa', sys.includes('khác câu đã sửa ít nhất MỘT cấu trúc'));
+  check(nameLv + ': cấm lặp lại câu sửa làm gợi ý', sys.includes('không lặp lại nguyên văn câu đã sửa'));
+}
+check('SC1 có mục Mốc dễ nhầm', sa.includes('# Mốc dễ nhầm'));
+check('TC1 cũng có Mốc dễ nhầm (pool gồm cả SC1)', sb.includes('# Mốc dễ nhầm'));
+check('Giáo trình Khác KHÔNG có Mốc dễ nhầm (không được dẫn số bài)', !sc.includes('# Mốc dễ nhầm'));
+check('mốc ghi rõ là bài của Sơ cấp 1', sa.includes('đều là bài của SƠ CẤP 1'));
+check('-아서/어서 tách đúng 2 nghĩa/2 bài',
+  sa.includes('bài 10 = "rồi"') && sa.includes('bài 12 = "vì… nên"'));
+check('못 V ở bài 12 chứ không phải 11', sa.includes('`못 V` (không thể): Sơ cấp 1 bài 12, KHÔNG phải bài 11'));
+check('잘하다/못하다 ở bài 9', sa.includes('`잘하다 / 못하다` (giỏi / không giỏi): Sơ cấp 1 bài 9'));
+check('ㅡ 탈락 ở bài 11', sa.includes('`ㅡ 탈락` (아파요, 바빠요, 썼어요): Sơ cấp 1 bài 11'));
+check('한테/께 ở bài 14 chứ không phải 9', sa.includes('`N한테/께` (cho ai): Sơ cấp 1 bài 14, KHÔNG phải bài 9'));
+check('dặn dẫn bài theo nghĩa đang dùng', sa.includes('dẫn đúng bài theo NGHĨA đang dùng'));
+check('Khác + TC2 vẫn không lọt số bài nào', !/bài \d/.test(sc));
+
 // --- readSetup --------------------------------------------------------------
 console.log('\n[F] readSetup');
 eq('kẹp số bài quá lớn về 16 cho SC1', readSetup({ level: 'sc1', curriculum: 'xirian', lesson: 99 }).lesson, 16);
