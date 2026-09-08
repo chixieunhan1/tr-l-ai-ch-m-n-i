@@ -10,6 +10,15 @@ import {
 } from './grammar';
 import type { GrammarLesson, LevelId } from './grammar';
 import { formatVocabForPrompt, getVocabPool, hasVocab } from './vocab';
+import { formatSceneForPrompt, normalizeScene } from './scene';
+import type { Scene } from './scene';
+
+export type { Scene, SceneReport } from './scene';
+
+/** Đọc scene client gửi lên. */
+export function readScene(body: any): Scene | null {
+  return body?.scene ? normalizeScene(body.scene) : null;
+}
 
 export type Mode = 'fix' | 'deep';
 export type Curriculum = 'xirian' | 'other';
@@ -242,6 +251,16 @@ export function buildSystemPrompt(s: Setup): string {
     );
   }
 
+  // g. Hoan canh hoi thoai — LUAT o day (on dinh, cache duoc);
+  //    GIA TRI scene di trong user message vi no doi lien tuc.
+  parts.push(
+    '# Hoàn cảnh hội thoại (scene)\n' +
+      'Mỗi lượt bạn nhận được dòng "HOÀN CẢNH HIỆN TẠI" gồm: chủ đề, địa điểm/tình huống, đang nói với ai, lối nói.\n' +
+      '- Dùng hoàn cảnh đó để sửa và gợi ý CHO ĐÚNG TÌNH HUỐNG. Ví dụ đang ở quán ăn nói với nhân viên thì câu gợi ý phải là câu dùng được ngay tại quán ăn với nhân viên — không gợi ý câu chỉ hợp trong lớp học hay khi nói với bạn thân.\n' +
+      '- Hoàn cảnh còn trống thì tự suy ra từ câu đang chấm và các câu ngữ cảnh.\n' +
+      '- Lối nói trong hoàn cảnh phải khớp với "register_detected" của câu; lệch nhau thì nêu trong ghi chú.'
+  );
+
   // f. Giu cau truc cua hoc vien
   parts.push(
     '# Giữ cấu trúc câu của học viên\n' +
@@ -258,8 +277,17 @@ const FIX_FORMAT =
   'Sửa lỗi cho câu trên. Nếu câu đã đúng thì "corrected" chính là câu đó và "errors" là mảng rỗng.\n' +
   '"why" viết bằng tiếng Việt có dấu, ngắn gọn một câu.\n' +
   '"register_detected" là dạng của CÂU CẦN CHẤM: "반말" hoặc "존댓말".\n' +
+  '"scene" mô tả hoàn cảnh hội thoại SAU câu này: topic (chủ đề), setting (địa điểm/tình huống), ' +
+  'interlocutor (đang nói chuyện với ai), register ("반말" hoặc "존댓말"). Viết topic/setting/interlocutor bằng tiếng Việt, ngắn gọn.\n' +
+  '"scene.changed" = true CHỈ KHI câu này lệch RÕ RÀNG khỏi HOÀN CẢNH HIỆN TẠI — tức đổi hẳn chủ đề, ' +
+  'hoặc đổi địa điểm, hoặc đổi người đang nói chuyện.\n' +
+  'MỘT câu lạc đề lẻ, câu đệm, câu xã giao (hỏi thời tiết, sức khoẻ, khen ngợi) thì "changed" = false — ' +
+  'giữ nguyên hoàn cảnh cũ, vì người nói vẫn đang ở trong tình huống đó.\n' +
+  'Hoàn cảnh hiện tại đang trống thì "changed" = false và điền scene bạn suy ra được.\n' +
   'CHỈ trả về JSON thuần, không markdown, không giải thích thêm:\n' +
-  '{"corrected":"câu đã sửa","register_detected":"존댓말","errors":[{"wrong":"phần sai","right":"phần đúng","why":"lý do bằng tiếng Việt"}]}';
+  '{"corrected":"câu đã sửa","register_detected":"존댓말",' +
+  '"scene":{"topic":"gọi món","setting":"quán ăn","interlocutor":"nhân viên phục vụ","register":"존댓말","changed":false},' +
+  '"errors":[{"wrong":"phần sai","right":"phần đúng","why":"lý do bằng tiếng Việt"}]}';
 
 const DEEP_FORMAT =
   'Với câu trên, đưa ra các cách diễn đạt tự nhiên hơn (upgrades), 2 câu ví dụ khác cùng ý (examples), và ghi chú (note).\n' +
@@ -272,11 +300,21 @@ const DEEP_FORMAT =
   '"examples":[{"ko":"","vi":"","patterns":[{"form":"-고 싶다","lesson":15}],"situation_changed":false}],' +
   '"note":"ghi chú bằng tiếng Việt"}';
 
-export function buildUserMessage(mode: Mode, text: string, context: string[]): string {
+export function buildUserMessage(
+  mode: Mode,
+  text: string,
+  context: string[],
+  scene?: Scene | null
+): string {
   const head = context.length
     ? 'Các câu học viên vừa nói trước đó (CHỈ để hiểu mạch chuyện và đoán 반말/존댓말, TUYỆT ĐỐI không chấm lại các câu này):\n' +
       context.map((c) => '- ' + c).join('\n') +
       '\n\n'
     : '';
-  return head + 'CÂU CẦN CHẤM: ' + text + '\n\n' + (mode === 'fix' ? FIX_FORMAT : DEEP_FORMAT);
+  return (
+    head +
+    formatSceneForPrompt(scene) + '\n\n' +
+    'CÂU CẦN CHẤM: ' + text + '\n\n' +
+    (mode === 'fix' ? FIX_FORMAT : DEEP_FORMAT)
+  );
 }

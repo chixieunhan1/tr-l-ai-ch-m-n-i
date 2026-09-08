@@ -12,6 +12,6 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["lib/**/*.ts", "scripts/test-grammar.ts", "scripts/test-prompt.ts"]
+  "include": ["lib/**/*.ts", "scripts/test-grammar.ts", "scripts/test-prompt.ts", "scripts/test-scene.ts"]
 }
 

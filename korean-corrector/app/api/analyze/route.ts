@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { buildSystemPrompt, buildUserMessage, readSetup } from '@/lib/prompt';
+import { buildSystemPrompt, buildUserMessage, readScene, readSetup } from '@/lib/prompt';
 import type { Mode } from '@/lib/prompt';
 import { countPatterns, getGrammarPool } from '@/lib/grammar';
 
@@ -54,9 +54,10 @@ export async function POST(req: NextRequest) {
     }
 
     const setup = readSetup(body);
+    const scene = readScene(body);
     const cfg = CONFIG[mode];
     const system = buildSystemPrompt(setup);
-    const user = buildUserMessage(mode, text, context);
+    const user = buildUserMessage(mode, text, context, scene);
 
     // dryRun: xem prompt dung ra sao mà không gọi API, không tốn tiền.
     // Dùng để kiểm tra cấu hình lớp bằng curl.

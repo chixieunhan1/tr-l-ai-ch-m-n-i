@@ -8,7 +8,7 @@
     "build": "next build",
     "start": "next start",
     "gen:grammar": "node scripts/build-grammar.mjs",
-    "test": "tsc -p tsconfig.test.json && node .tmp-test/scripts/test-grammar.js && node .tmp-test/scripts/test-prompt.js"
+    "test": "tsc -p tsconfig.test.json && node .tmp-test/scripts/test-grammar.js && node .tmp-test/scripts/test-prompt.js && node .tmp-test/scripts/test-scene.js"
   },
   "dependencies": {
     "next": "^14.2.0",

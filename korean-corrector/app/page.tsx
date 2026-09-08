@@ -2,16 +2,22 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { LEVEL_LABEL, LEVEL_ORDER, getLesson, lessonCount } from '@/lib/grammar';
 import type { LevelId } from '@/lib/grammar';
+import {
+  EMPTY_SCENE, INITIAL_SCENE_STATE, SCENE_FIELDS, isEmptyScene,
+  reduceScene, sceneFromPreset, sceneLabel,
+} from '@/lib/scene';
+import type { Scene, SceneReport, SceneState } from '@/lib/scene';
 
 interface AE { wrong: string; right: string; why: string }
 interface PatTag { form: string; lesson: number }
 interface KV { ko: string; vi: string; patterns?: PatTag[]; situation_changed?: boolean }
-interface FixData { corrected: string; errors: AE[] }
+interface FixData { corrected: string; errors: AE[]; register_detected?: string; scene?: SceneReport }
 interface DeepData { upgrades: KV[]; examples: KV[]; note: string }
 interface RI {
   id: number;
   text: string;
   merged?: boolean;
+  sceneChanged?: boolean;
   fix?: FixData;
   deep?: DeepData;
   fixErr?: string;
@@ -38,11 +44,12 @@ interface Setup {
   review: number[];   // toi da 2 bai on them, deu < lesson
   topic: string;
   register: Register;
+  scenePreset: string; // "Dat tinh huong truoc" — co thi scene bi khoa
 }
 const MAX_REVIEW = 2;
 const SETUP_KEY = 'xirian.setup.v2';
 const DEFAULT_SETUP: Setup = {
-  level: 'sc1', curriculum: 'xirian', lesson: 1, review: [], topic: '', register: 'auto',
+  level: 'sc1', curriculum: 'xirian', lesson: 1, review: [], topic: '', register: 'auto', scenePreset: '',
 };
 const REGISTER_LABEL: Record<Register, string> = {
   auto: 'Tự động',
@@ -66,6 +73,7 @@ function loadSetup(): Setup | null {
         : [],
       topic: typeof s.topic === 'string' ? s.topic : '',
       register: s.register === 'banmal' || s.register === 'jondaetmal' ? s.register : 'auto',
+      scenePreset: typeof s.scenePreset === 'string' ? s.scenePreset : '',
     };
   } catch (e) { return null }
 }
@@ -267,6 +275,8 @@ export default function Home() {
   const [, forceTick] = useState(0);
   const [setup, setSetup] = useState<Setup>(DEFAULT_SETUP);
   const [setupOpen, setSetupOpen] = useState(true);
+  const [scene, setScene] = useState<Scene>(EMPTY_SCENE);
+  const [sceneOpen, setSceneOpen] = useState(false);
   const [debug, setDebug] = useState(false);   // chi bat khi URL co ?debug=1
   const [logOn, setLogOn] = useState(true);    // thu/mo bang trong che do debug
   const [logLines, setLogLines] = useState<LogLine[]>([]);
@@ -287,6 +297,9 @@ export default function Home() {
   const ctrlRef = useRef<Map<number, AbortController>>(new Map());
   const lastRef = useRef<{ id: number; text: string; at: number; context: string[]; sealed: boolean } | null>(null);
   const setupRef = useRef<Setup>(DEFAULT_SETUP);
+  const sceneRef = useRef<SceneState>(INITIAL_SCENE_STATE);
+  // Thẻ mới nhất đã áp scene — chặn phản hồi về muộn của thẻ cũ ghi đè scene mới.
+  const sceneAppliedIdRef = useRef(0);
   const debugRef = useRef(false);
   const logBoxRef = useRef<HTMLDivElement>(null);
   const logRef = useRef<LogLine[]>([]);
@@ -351,6 +364,42 @@ export default function Home() {
     setLogLines(logRef.current);
   }, []);
 
+  // Áp scene do model báo về. Trả về true nếu hoàn cảnh thực sự đổi (để hiện chip).
+  const applyScene = useCallback((id: number, report?: SceneReport) => {
+    if (!report) return false;
+    if (id <= sceneAppliedIdRef.current) {
+      addLog('scene bỏ qua', 'thẻ #' + id + ' về muộn hơn thẻ #' + sceneAppliedIdRef.current);
+      return false;
+    }
+    sceneAppliedIdRef.current = id;
+    const locked = !!setupRef.current.scenePreset.trim();
+    const step = reduceScene(sceneRef.current, report, locked);
+    sceneRef.current = step.state;
+    setScene(step.state.scene);
+    addLog('scene ' + step.outcome, sceneLabel(step.state.scene) || '(trống)' +
+      (step.outcome === 'held' ? ' · đã đặt tình huống trước, cần lệch 2 câu liên tiếp' : ''));
+    return step.outcome === 'replaced';
+  }, [addLog]);
+
+  const setSceneManual = useCallback((next: Scene) => {
+    sceneRef.current = { scene: next, pending: 0 };
+    setScene(next);
+  }, []);
+
+  const endScene = useCallback(() => {
+    sceneRef.current = INITIAL_SCENE_STATE;
+    sceneAppliedIdRef.current = 0;
+    setScene(EMPTY_SCENE);
+    addLog('scene kết thúc', 'giáo viên bấm "Kết thúc chủ đề"');
+  }, [addLog]);
+
+  // Có "đặt tình huống trước" mà scene đang trống thì khởi tạo scene từ đó.
+  useEffect(() => {
+    const p = setup.scenePreset.trim();
+    if (p && isEmptyScene(sceneRef.current.scene)) setSceneManual(sceneFromPreset(p));
+  }, [setup.scenePreset, setSceneManual]);
+
+
   const patch = useCallback((id: number, p: Partial<RI>) => {
     setResults(prev => prev.map(r => (r.id === id ? { ...r, ...p } : r)));
   }, []);
@@ -367,6 +416,7 @@ export default function Home() {
         review: setupRef.current.curriculum === 'xirian' ? setupRef.current.review : [],
         topic: setupRef.current.topic,
         register: setupRef.current.register,
+        scene: sceneRef.current.scene,
       }),
       signal,
     });
@@ -386,7 +436,7 @@ export default function Home() {
       ctrlRef.current.set(job.id, ctrl);
       activeRef.current++; setActive(activeRef.current);
       const fix = call('fix', job.text, job.context, ctrl.signal)
-        .then((d: FixData) => patch(job.id, { fix: d, fixLoading: false }))
+        .then((d: FixData) => patch(job.id, { fix: d, fixLoading: false, sceneChanged: applyScene(job.id, d.scene) }))
         .catch((e: any) => { if (e?.name !== 'AbortError') patch(job.id, { fixErr: e.message, fixLoading: false }) });
       const deep = call('deep', job.text, job.context, ctrl.signal)
         .then((d: DeepData) => patch(job.id, { deep: d, deepLoading: false }))
@@ -398,7 +448,7 @@ export default function Home() {
         drainRef.current();
       });
     }
-  }, [call, patch]);
+  }, [call, patch, applyScene]);
   drainRef.current = drain;
 
   const submit = useCallback((raw: string) => {
@@ -648,6 +698,38 @@ export default function Home() {
           committedRef.current=e.target.value; sessionRef.current=''; baseIdxRef.current=lenRef.current;
           bufRef.current=e.target.value; setBuf(e.target.value); clearSilence();
         }} placeholder="Bấm mic rồi nói. Ngừng nói là tự chấm — đuôi câu chưa xong thì máy chờ lâu hơn." style={{width:'100%',minHeight:60,textAlign:'center',fontSize:18,fontFamily:'Noto Sans KR,sans-serif',lineHeight:1.6,background:'transparent',border:'1px solid var(--bd)',borderRadius:8,color:'var(--tx)',padding:10,resize:'vertical',outline:'none'}}/>
+        <div style={{width:'100%',display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+          <button onClick={()=>setSceneOpen(v=>!v)} title="Bấm để sửa tay hoặc xoá hoàn cảnh"
+            style={{flex:'1 1 auto',textAlign:'left',fontSize:12,padding:'6px 10px',borderRadius:8,cursor:'pointer',
+              border:'1px solid var(--bd)',background:'var(--sf2)',color:isEmptyScene(scene)?'var(--t3)':'var(--tx)'}}>
+            🎬 {isEmptyScene(scene)
+              ?'Chưa rõ hoàn cảnh — máy sẽ tự suy khi bạn nói'
+              :'Đang nói về: '+sceneLabel(scene)}
+            {setup.scenePreset.trim()&&<span style={{color:'var(--t3)'}}> · đã đặt trước</span>}
+          </button>
+          {!isEmptyScene(scene)&&<button onClick={endScene}
+            style={{fontSize:12,padding:'6px 12px',borderRadius:8,cursor:'pointer',border:'1px solid var(--bd)',background:'transparent',color:'var(--t2)'}}>Kết thúc chủ đề</button>}
+        </div>
+        {sceneOpen&&<div style={{width:'100%',display:'flex',flexWrap:'wrap',gap:10,padding:'12px',borderRadius:8,border:'1px solid var(--bd)',background:'var(--sf2)'}}>
+          {SCENE_FIELDS.map(k=>(
+            <div key={k} style={{flex:'1 1 150px',minWidth:130}}>
+              <label style={LAB}>{k==='topic'?'Chủ đề':k==='setting'?'Địa điểm / tình huống':k==='interlocutor'?'Nói với ai':'Lối nói'}</label>
+              <input value={scene[k]} onChange={e=>setSceneManual({...scene,[k]:e.target.value})}
+                placeholder={k==='register'?'존댓말 / 반말':''}
+                style={{...SEL,width:'100%',cursor:'text'}}/>
+            </div>
+          ))}
+          <div style={{flexBasis:'100%'}}>
+            <label style={LAB}>Đặt tình huống trước (có thì máy không tự đổi, trừ khi lệch 2 câu liên tiếp)</label>
+            <input value={setup.scenePreset} onChange={e=>updateSetup({scenePreset:e.target.value})}
+              placeholder="VD: đóng vai đi khám bệnh, nói với bác sĩ"
+              style={{...SEL,width:'100%',cursor:'text'}}/>
+          </div>
+          <button onClick={()=>{endScene();setSceneOpen(false)}}
+            style={{...SEL,border:'1px solid var(--bd)',background:'transparent',color:'var(--rd)'}}>Xoá hoàn cảnh</button>
+          <button onClick={()=>setSceneOpen(false)}
+            style={{...SEL,background:'var(--ac)',color:'#fff',border:'none',fontWeight:600}}>Xong</button>
+        </div>}
         {wait
           ?<div style={{fontSize:12,color:'var(--am)',display:'flex',alignItems:'center',gap:8}}>
             <span style={{display:'inline-block',width:6,height:6,borderRadius:'50%',background:'var(--am)',animation:'pd 1s infinite'}}/>
@@ -678,6 +760,7 @@ export default function Home() {
           <R l="🔴 Gốc" t="orig">
             {r.text}
             {r.merged&&<div style={{fontSize:11,color:'var(--t3)',marginTop:4,fontFamily:'Be Vietnam Pro,sans-serif'}}>Đã nối với câu trước</div>}
+            {r.sceneChanged&&<div style={{marginTop:5}}><span style={{fontSize:10.5,padding:'2px 7px',borderRadius:20,fontFamily:'Be Vietnam Pro,sans-serif',background:'var(--bb)',color:'var(--bl)',border:'1px solid rgba(96,165,250,.25)'}}>chủ đề mới</span></div>}
           </R>
           <R l="✅ Sửa" t="fix">
             {r.fixLoading?<Sk w="70%"/>:r.fixErr?<E m={r.fixErr}/>:
