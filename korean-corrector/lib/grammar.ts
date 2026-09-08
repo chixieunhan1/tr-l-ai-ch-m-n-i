@@ -50,34 +50,6 @@ export function getGrammarPool(level: LevelId, lessonNumber: number): GrammarLev
   return out;
 }
 
-export interface UpcomingLesson {
-  level: LevelId;
-  label: string;
-  lesson: GrammarLesson;
-}
-
-/**
- * 1–2 bài kế tiếp, để gợi ý "sắp học".
- * Hết bài của cấp hiện tại thì lấn sang cấp kế tiếp (SC1 bài 16 → SC2 bài 1…).
- */
-export function getUpcoming(level: LevelId, lessonNumber: number, count = 2): UpcomingLesson[] {
-  const out: UpcomingLesson[] = [];
-  let idx = LEVEL_ORDER.indexOf(level);
-  let n = lessonNumber + 1;
-  while (out.length < count && idx < LEVEL_ORDER.length) {
-    const d = levelData(LEVEL_ORDER[idx]);
-    const lesson = d.lessons.find((l) => l.number === n);
-    if (lesson) {
-      out.push({ level: d.level, label: d.label, lesson });
-      n++;
-    } else {
-      idx++;
-      n = 1;
-    }
-  }
-  return out;
-}
-
 const shortMeaning = (m: string, max = 46) =>
   m.length <= max ? m : m.slice(0, max - 1).trimEnd() + '…';
 
@@ -94,11 +66,6 @@ export function formatPoolForPrompt(pool: GrammarLevelData[]): string {
       return head + '\n' + lv.lessons.map(lessonLine).join('\n');
     })
     .join('\n\n');
-}
-
-/** Dạng gọn cho phần "sắp học" trong prompt. */
-export function formatUpcomingForPrompt(up: UpcomingLesson[]): string {
-  return up.map((u) => `${u.label} ${lessonLine(u.lesson)}`).join('\n');
 }
 
 export function countPatterns(pool: GrammarLevelData[]): number {

@@ -9,7 +9,6 @@ import {
   formatPoolForPrompt,
   getGrammarPool,
   getLesson,
-  getUpcoming,
   lessonCount,
 } from '../lib/grammar';
 import type { LevelId } from '../lib/grammar';
@@ -73,17 +72,8 @@ eq('TC2 bài 18 → pool đủ 4 cấp', getGrammarPool('tc2', 18).map((p) => p.
 eq('TC2 bài 18 → tổng pattern = 63+71+68+70', countPatterns(getGrammarPool('tc2', 18)), 272);
 eq('Bài vượt số bài thật thì kẹp lại', getGrammarPool('sc1', 99)[0].lessons.length, 16);
 
-// --- 3. getUpcoming ----------------------------------------------------------
-console.log('\n[3] getUpcoming');
-eq('getUpcoming(sc1, 5) → bài 6 và 7', getUpcoming('sc1', 5).map((u) => u.lesson.number), [6, 7]);
-eq('… đúng cấp SC1', getUpcoming('sc1', 5).map((u) => u.level), ['sc1', 'sc1']);
-eq('getUpcoming(sc1, 5, 1) → chỉ bài 6', getUpcoming('sc1', 5, 1).map((u) => u.lesson.number), [6]);
-eq('Hết bài thì lấn sang cấp sau: sc1 B16 → sc2 B1,B2',
-  getUpcoming('sc1', 16).map((u) => u.level + ':' + u.lesson.number), ['sc2:1', 'sc2:2']);
-eq('TC2 bài 18 là cuối cùng → rỗng', getUpcoming('tc2', 18).length, 0);
-
-// --- 4. formatPoolForPrompt --------------------------------------------------
-console.log('\n[4] formatPoolForPrompt');
+// --- 3. formatPoolForPrompt --------------------------------------------------
+console.log('\n[3] formatPoolForPrompt');
 const txt = formatPoolForPrompt(getGrammarPool('sc1', 5));
 check('có tiêu đề cấp', txt.includes('## Sơ cấp 1'));
 check('có bài 5', txt.includes('B5 '));
@@ -96,8 +86,8 @@ check('pool TC2 đủ 4 tiêu đề cấp',
   ['Sơ cấp 1', 'Sơ cấp 2', 'Trung cấp 1', 'Trung cấp 2'].every((s) => txtTc2.includes('## ' + s)));
 console.log(`  (pool TC2 B18: ${countPatterns(getGrammarPool('tc2', 18))} pattern, ${txtTc2.length} ký tự)`);
 
-// --- 5. Tu vung (data/vocab/ la tuy chon) ------------------------------------
-console.log('\n[5] Từ vựng');
+// --- 4. Tu vung (data/vocab/ la tuy chon) ------------------------------------
+console.log('\n[4] Từ vựng');
 eq('chưa có data/vocab/ → hasVocab() = false', hasVocab(), false);
 eq('… pool từ vựng rỗng', getVocabPool('sc1', 5).length, 0);
 

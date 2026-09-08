@@ -19,13 +19,17 @@ echo "=============================================================="
 call "{\"text\":\"$SENT\",\"mode\":\"deep\",\"context\":[],\"level\":\"sc1\",\"curriculum\":\"xirian\",\"lesson\":5,\"topic\":\"\",\"register\":\"jondaetmal\",\"dryRun\":true}" \
   | node -e '
 const d=JSON.parse(require("fs").readFileSync(0,"utf8"));
-const pool=d.system.slice(d.system.indexOf("# Ngữ pháp"), d.system.indexOf("# Sắp học"));
+const sec=(h)=>{const i=d.system.indexOf(h); if(i<0) return ""; const j=d.system.indexOf("\n\n#",i); return j<0?d.system.slice(i):d.system.slice(i,j)};
+const pool=sec("# Ngữ pháp");
 console.log("model            :", d.model);
 console.log("pattern trong pool:", d.poolPatterns, "· system", d.systemChars, "ký tự");
 console.log("pool             :", pool.split("\n").filter(l=>/^B\d/.test(l)).join(" | "));
 for (const g of ["V-았/었-","V-고"]) console.log((pool.includes(g)?"  CO  ":"  THIEU"), g);
-for (const g of ["(으)면서","V-아서/어서"]) console.log((d.system.includes(g)?"  LO   ":"  sach "), g, "(khong duoc xuat hien)");
-console.log("sap hoc          :", d.system.slice(d.system.indexOf("# Sắp học")).split("\n").slice(1,3).join(" | "));
+// Tich luy nghiem ngat: cac pattern bai >=6 khong duoc xuat hien O BAT KY DAU
+for (const g of ["(으)면서","V-아서/어서","못 V","ㅡ 탈락","V-고 싶다"])
+  console.log((d.system.includes(g)?"  LO   ":"  sach "), g, "(bai >=6, khong duoc xuat hien)");
+console.log("bai trong tam    :", (d.system.match(/# Bài trọng tâm.*/)||["(khong co)"])[0]);
+console.log("muc Sap hoc      :", d.system.includes("# Sắp học")?"CON (sai)":"da bo (dung)");
 '
 
 echo
