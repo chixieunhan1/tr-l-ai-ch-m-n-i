@@ -16,3 +16,19 @@ export interface GrammarLevelData {
   label: string;
   lessons: GrammarLesson[];
 }
+
+export interface VocabWord {
+  word: string;
+  meaning: string;
+}
+
+export interface VocabLesson {
+  number: number;
+  words: VocabWord[];
+}
+
+export interface VocabLevelData {
+  level: LevelId;
+  label: string;
+  lessons: VocabLesson[];
+}

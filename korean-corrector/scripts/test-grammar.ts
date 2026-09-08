@@ -13,6 +13,8 @@ import {
   lessonCount,
 } from '../lib/grammar';
 import type { LevelId } from '../lib/grammar';
+import { countWords, formatVocabForPrompt, getVocabPool, hasVocab } from '../lib/vocab';
+import type { VocabLevelData } from '../lib/vocab';
 
 let pass = 0;
 const fails: string[] = [];
@@ -93,6 +95,34 @@ const txtTc2 = formatPoolForPrompt(getGrammarPool('tc2', 18));
 check('pool TC2 đủ 4 tiêu đề cấp',
   ['Sơ cấp 1', 'Sơ cấp 2', 'Trung cấp 1', 'Trung cấp 2'].every((s) => txtTc2.includes('## ' + s)));
 console.log(`  (pool TC2 B18: ${countPatterns(getGrammarPool('tc2', 18))} pattern, ${txtTc2.length} ký tự)`);
+
+// --- 5. Tu vung (data/vocab/ la tuy chon) ------------------------------------
+console.log('\n[5] Từ vựng');
+eq('chưa có data/vocab/ → hasVocab() = false', hasVocab(), false);
+eq('… pool từ vựng rỗng', getVocabPool('sc1', 5).length, 0);
+
+// Logic dinh dang test bang du lieu dung san, khong can file that.
+const fake: VocabLevelData[] = [
+  { level: 'sc1', label: 'Sơ cấp 1', lessons: [
+    { number: 3, words: [{ word: '학교', meaning: 'trường học' }, { word: '가다', meaning: 'đi' }] },
+    { number: 5, words: [{ word: '주말', meaning: 'cuối tuần' }] },
+  ] },
+];
+const vtxt = formatVocabForPrompt(fake);
+check('gom theo bài', vtxt.includes('[SC1 B3]') && vtxt.includes('[SC1 B5]'));
+check('có từ + nghĩa', vtxt.includes('학교 (trường học)'));
+eq('đếm đúng số từ', countWords(fake), 3);
+
+const many: VocabLevelData[] = [
+  { level: 'sc1', label: 'Sơ cấp 1', lessons: Array.from({ length: 10 }, (_, i) => ({
+    number: i + 1,
+    words: Array.from({ length: 60 }, (_, k) => ({ word: `w${i + 1}_${k}`, meaning: '' })),
+  })) },
+];
+const capped = formatVocabForPrompt(many, 400);
+check('quá dài thì cắt còn ~400 từ gần nhất', capped.includes('đã lược 200 từ'));
+check('… giữ bài mới nhất (B10)', capped.includes('w10_59'));
+check('… bỏ bài cũ nhất (B1)', !capped.includes('w1_0 '));
 
 // --- ket qua -----------------------------------------------------------------
 console.log(`\n${fails.length === 0 ? 'ALL PASS' : fails.length + ' FAILURES'} — ${pass} pass`);

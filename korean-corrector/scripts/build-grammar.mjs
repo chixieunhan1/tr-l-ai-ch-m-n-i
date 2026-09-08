@@ -7,14 +7,16 @@
 //   TC1 - muc "### Bai N - title", pattern nam trong khoi "- **문법과 표현**:"
 //   TC2 - muc "## Bai N - title",  moi pattern la "N. `form` - nghia"
 
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, '..');
 const DATA_DIR = join(ROOT, 'data', 'grammar');
+const VOCAB_DIR = join(ROOT, 'data', 'vocab');
 const OUT = join(ROOT, 'lib', 'grammar-data.ts');
+const OUT_VOCAB = join(ROOT, 'lib', 'vocab-data.ts');
 
 const read = (name) => readFileSync(join(DATA_DIR, name), 'utf8');
 
@@ -133,6 +135,48 @@ function parseTc2(md) {
   }).filter((l) => l.patterns.length);
 }
 
+// --- TU VUNG (tuy chon) -----------------------------------------------------
+// data/vocab/ CHUA CO cung khong sao: sinh ra mang rong, prompt tu chuyen sang
+// che do "dan model dung tu co ban dung cap". Them thu muc vao la tu dong nhan.
+// Dinh dang mong doi: moi cap mot file co ten chua sc1/sc2/tc1/tc2, ben trong
+//   Bài 3
+//   학교 — trường học
+//   가다 — đi
+
+function parseVocab(md) {
+  const lessons = [];
+  let cur = null;
+  for (const raw of md.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    const head = line.match(/^#*\s*(?:Bài|Bai|과)\s*(\d+)/i);
+    if (head) {
+      cur = { number: Number(head[1]), words: [] };
+      lessons.push(cur);
+      continue;
+    }
+    if (!cur) continue;
+    if (/^[|>#-]{3,}/.test(line)) continue;
+    // "tu — nghia" · chap nhan —, – hoac " - "
+    const m = line.replace(/^[-*]\s+/, '').match(/^(.+?)\s*(?:—|–|\s-\s)\s*(.+)$/);
+    if (m) cur.words.push({ word: stripMd(m[1]), meaning: stripMd(m[2]) });
+  }
+  return lessons.filter((l) => l.words.length).sort((a, b) => a.number - b.number);
+}
+
+function loadVocab() {
+  if (!existsSync(VOCAB_DIR)) return [];
+  const files = readdirSync(VOCAB_DIR).filter((f) => /\.(md|txt|csv)$/i.test(f));
+  const out = [];
+  for (const { level, label } of LEVELS) {
+    const file = files.find((f) => f.toLowerCase().includes(level));
+    if (!file) continue;
+    const lessons = parseVocab(readFileSync(join(VOCAB_DIR, file), 'utf8'));
+    if (lessons.length) out.push({ level, label, lessons });
+  }
+  return out;
+}
+
 // --- sinh file --------------------------------------------------------------
 
 const LEVELS = [
@@ -173,10 +217,29 @@ writeFileSync(
   'utf8'
 );
 
+const vocab = loadVocab();
+writeFileSync(
+  OUT_VOCAB,
+  '// AUTO-GENERATED bởi scripts/build-grammar.mjs — ĐỪNG sửa tay.\n' +
+    '// Nguồn: data/vocab/*.md (tuỳ chọn — chưa có thì mảng rỗng).\n' +
+    "import type { VocabLevelData } from './grammar-types';\n\n" +
+    'export const VOCAB_DATA: VocabLevelData[] = ' +
+    JSON.stringify(vocab, null, 2) +
+    ';\n',
+  'utf8'
+);
+
 const total = data.reduce((n, l) => n + l.lessons.reduce((m, x) => m + x.patterns.length, 0), 0);
+const vocabTotal = vocab.reduce((n, l) => n + l.lessons.reduce((m, x) => m + x.words.length, 0), 0);
 console.log(
   '[grammar] ' +
     data.map((d) => `${d.level}=${d.lessons.length} bài/` +
       d.lessons.reduce((m, x) => m + x.patterns.length, 0) + ' pattern').join('  ') +
     `  · tổng ${total} pattern → lib/grammar-data.ts`
+);
+console.log(
+  vocab.length
+    ? `[vocab]   ${vocab.map((v) => `${v.level}=${v.lessons.length} bài/` +
+        v.lessons.reduce((m, x) => m + x.words.length, 0) + ' từ').join('  ')}  · tổng ${vocabTotal} từ → lib/vocab-data.ts`
+    : '[vocab]   chưa có data/vocab/ — prompt sẽ dặn model dùng từ cơ bản đúng cấp'
 );

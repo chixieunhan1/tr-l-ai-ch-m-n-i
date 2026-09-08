@@ -3,25 +3,34 @@
 import {
   LEVEL_LABEL,
   formatPoolForPrompt,
-  formatUpcomingForPrompt,
   getGrammarPool,
   getLesson,
-  getUpcoming,
   isLevelId,
   lessonCount,
 } from './grammar';
-import type { LevelId } from './grammar';
+import type { GrammarLesson, LevelId } from './grammar';
+import { formatVocabForPrompt, getVocabPool, hasVocab } from './vocab';
 
 export type Mode = 'fix' | 'deep';
 export type Curriculum = 'xirian' | 'other';
 export type Register = 'auto' | 'banmal' | 'jondaetmal';
 
+export const MAX_REVIEW = 2;
+
 export interface Setup {
   level: LevelId;
   curriculum: Curriculum;
   lesson: number | null;
+  /** Bài ôn thêm — tối đa 2, đều < bài hiện tại. Bài hiện tại luôn là trọng tâm nên không nằm ở đây. */
+  review: number[];
   topic: string;
   register: Register;
+}
+
+/** Bài trọng tâm = bài đang học + các bài ôn thêm. */
+export function focusLessons(s: Setup): number[] {
+  if (s.curriculum !== 'xirian' || s.lesson === null) return [];
+  return [s.lesson, ...s.review];
 }
 
 export function readSetup(body: any): Setup {
@@ -36,8 +45,17 @@ export function readSetup(body: any): Setup {
     if (Number.isFinite(n)) lesson = Math.min(Math.max(Math.round(n), 1), lessonCount(level));
   }
 
+  let review: number[] = [];
+  if (lesson !== null && Array.isArray(body?.review)) {
+    const cur: number = lesson;
+    const nums: number[] = body.review
+      .map((v: unknown) => Math.round(Number(v)))
+      .filter((n: number) => Number.isFinite(n) && n >= 1 && n < cur);
+    review = Array.from(new Set<number>(nums)).sort((x, y) => x - y).slice(0, MAX_REVIEW);
+  }
+
   const topic = typeof body?.topic === 'string' ? body.topic.trim().slice(0, 300) : '';
-  return { level, curriculum, lesson, topic, register };
+  return { level, curriculum, lesson, review, topic, register };
 }
 
 const LEVEL_RULES: Record<LevelId, string> = {
@@ -86,19 +104,84 @@ function registerRules(s: Setup): string {
 // Lay tu bang "5 mốc DỄ NHẦM NHẤT" trong data/grammar/grammar-by-lesson-sc1.md.
 // Ghi ro "Sơ cấp 1" o moi dong: lop TC1/TC2 cung co bai 9/10/11/12/14 cua rieng ho,
 // khong ghi ro thi ghi chu se dan nham sang sach khac.
-const CONFUSABLE =
-  '# Mốc dễ nhầm (mọi số bài dưới đây đều là bài của SƠ CẤP 1)\n' +
-  '- `-아서/어서` dạy HAI lần, hai nghĩa khác nhau: Sơ cấp 1 bài 10 = "rồi" (trình tự hành động) · Sơ cấp 1 bài 12 = "vì… nên" (nguyên nhân). Khi ghi chú phải dẫn đúng bài theo NGHĨA đang dùng trong câu, không được gộp làm một.\n' +
-  '- `못 V` (không thể): Sơ cấp 1 bài 12, KHÔNG phải bài 11. Bài 11 chỉ có `-지 마세요` (đừng).\n' +
-  '- `잘하다 / 못하다` (giỏi / không giỏi): Sơ cấp 1 bài 9 — khác hẳn `못 V` của bài 12.\n' +
-  '- `ㅡ 탈락` (아파요, 바빠요, 썼어요): Sơ cấp 1 bài 11.\n' +
-  '- `N한테/께` (cho ai): Sơ cấp 1 bài 14, KHÔNG phải bài 9. Bài 9 chỉ có `N의` (của).';
+//
+// `needs` = bai SC1 cao nhat ma dong do nhac toi. Chi nhung dong nao NAM TRONG pool,
+// vi luat tich luy nghiem ngat: hoc vien moi hoc SC1 bai 5 thi nhac 못 V (bai 12) vua
+// vo ich vua lam lo pattern bai chua hoc vao context.
+const CONFUSABLE_ROWS: { needs: number; line: string }[] = [
+  { needs: 12, line: '- `-아서/어서` dạy HAI lần, hai nghĩa khác nhau: Sơ cấp 1 bài 10 = "rồi" (trình tự hành động) · Sơ cấp 1 bài 12 = "vì… nên" (nguyên nhân). Khi ghi chú phải dẫn đúng bài theo NGHĨA đang dùng trong câu, không được gộp làm một.' },
+  { needs: 12, line: '- `못 V` (không thể): Sơ cấp 1 bài 12, KHÔNG phải bài 11. Bài 11 chỉ có `-지 마세요` (đừng).' },
+  { needs: 12, line: '- `잘하다 / 못하다` (giỏi / không giỏi): Sơ cấp 1 bài 9 — khác hẳn `못 V` của bài 12.' },
+  { needs: 11, line: '- `ㅡ 탈락` (아파요, 바빠요, 썼어요): Sơ cấp 1 bài 11.' },
+  { needs: 14, line: '- `N한테/께` (cho ai): Sơ cấp 1 bài 14, KHÔNG phải bài 9. Bài 9 chỉ có `N의` (của).' },
+];
+
+function confusableSection(s: Setup): string {
+  // Cap cao hon SC1 thi pool da gom tron SC1 (16 bai).
+  const sc1Reach = s.level === 'sc1' ? (s.lesson ?? 0) : lessonCount('sc1');
+  const rows = CONFUSABLE_ROWS.filter((r) => r.needs <= sc1Reach);
+  if (!rows.length) return '';
+  return (
+    '# Mốc dễ nhầm (mọi số bài dưới đây đều là bài của SƠ CẤP 1)\n' +
+    rows.map((r) => r.line).join('\n')
+  );
+}
 
 const UPGRADE_RULE =
   '# Gợi ý nâng cấp phải thực sự nâng\n' +
   '- Mỗi câu ở phần "Nâng" phải khác câu đã sửa ít nhất MỘT cấu trúc ngữ pháp hoặc MỘT cách diễn đạt.\n' +
   '- TUYỆT ĐỐI không lặp lại nguyên văn câu đã sửa làm gợi ý — kể cả gợi ý đầu tiên. ' +
   'Nếu câu học viên vốn đã đúng và không còn gì để nâng theo đúng trình độ, hãy đổi cách diễn đạt chứ đừng chép lại câu cũ.';
+
+// data/vocab/ co thi nhung tu vung tich luy; chua co thi dan model bam theo
+// chu de cua cac bai da hoc (tieu de bai da nam san trong danh sach ngu phap).
+function vocabSection(s: Setup): string {
+  const head = '# Từ vựng\n';
+  if (s.curriculum === 'xirian' && s.lesson !== null && hasVocab()) {
+    const pool = getVocabPool(s.level, s.lesson);
+    if (pool.length) {
+      return (
+        head +
+        formatVocabForPrompt(pool) +
+        '\n\n- TÍCH LUỸ NGHIÊM NGẶT: chỉ dùng từ vựng trong danh sách trên, cộng từ cơ bản nhất của cấp. Không dùng từ của bài chưa học.'
+      );
+    }
+  }
+  return (
+    head +
+    `- Chưa có danh sách từ vựng cho lớp này. Chỉ dùng từ vựng cơ bản đúng trình độ ${LEVEL_LABEL[s.level]}.\n` +
+    (s.curriculum === 'xirian' && s.lesson !== null
+      ? '- Ưu tiên từ thuộc chủ đề các bài đã học — tiêu đề mỗi bài trong danh sách ngữ pháp ở trên CHÍNH LÀ chủ đề của bài đó.\n'
+      : '') +
+    '- Tránh từ vượt quá phạm vi cấp này. Nếu buộc phải dùng một từ khó hơn, giải thích nghĩa trong ghi chú.'
+  );
+}
+
+const lessonPatternLine = (l: GrammarLesson) =>
+  `B${l.number} ${l.title}: ` + l.patterns.map((p) => p.form).join(' · ');
+
+function focusSection(s: Setup): string {
+  const nums = focusLessons(s);
+  if (!nums.length) return '';
+  const lessons = nums
+    .map((n) => getLesson(s.level, n))
+    .filter((l): l is GrammarLesson => !!l);
+
+  const head =
+    '# Bài trọng tâm: bài ' + s.lesson +
+    (s.review.length ? ' · ôn thêm bài ' + s.review.join(', ') : '') + '\n' +
+    lessons.map(lessonPatternLine).join('\n');
+
+  return (
+    head +
+    '\n\n## Cách dùng bài trọng tâm\n' +
+    '- Phần Nâng: ít nhất 2/3 số câu phải dùng ≥1 pattern của bài trọng tâm (3 câu → ít nhất 2 câu; 2 câu → cả 2 câu).\n' +
+    '- MỖI câu ở phần Nâng VÀ phần Ví dụ đều phải trả thêm trường "patterns": danh sách pattern CỦA BÀI TRỌNG TÂM mà câu đó thực sự dùng, dạng [{"form":"-고 싶다","lesson":15}]. Câu không dùng pattern nào của bài trọng tâm thì để mảng rỗng [].\n' +
+    '- Phần Ví dụ: cả 2 câu phải dùng pattern VÀ từ vựng của bài trọng tâm. Nếu không lồng được tự nhiên vào tình huống của câu gốc thì ĐƯỢC đổi sang tình huống khác, và câu đó phải trả thêm "situation_changed": true (mặc định false).\n' +
+    '- Phần Ghi chú: DÒNG CUỐI CÙNG phải có dạng "Ôn bài X: <các pattern của bài X đã dùng>".\n' +
+    '- ƯU TIÊN CÂU TỰ NHIÊN: nếu nhét pattern của bài trọng tâm vào sẽ làm câu gượng, KHÔNG được ép. Khi đó dùng pattern khác trong pool và nói rõ trong ghi chú là vì sao không dùng pattern bài trọng tâm.'
+  );
+}
 
 export function todayTopic(s: Setup): string {
   if (s.topic) return s.topic;
@@ -126,18 +209,19 @@ export function buildSystemPrompt(s: Setup): string {
       '# Ngữ pháp học viên ĐÃ HỌC\n' +
         formatPoolForPrompt(getGrammarPool(s.level, s.lesson)) +
         '\n\n## Cách dùng danh sách trên\n' +
-        '- Đây là những gì học viên ĐÃ HỌC. Dùng để ƯU TIÊN gợi ý, KHÔNG dùng để cấm: học viên dùng đúng một mẫu ngoài danh sách nhưng cùng cấp độ thì vẫn chấp nhận, không tính là lỗi.\n' +
-        '- Mọi gợi ý nâng cấp phải nằm trong danh sách trên. Ngoại lệ duy nhất: tối đa 1 gợi ý được dùng pattern ở mục "Sắp học", và phải ghi rõ "(sắp học ở bài X)".\n' +
+        '- TÍCH LUỸ NGHIÊM NGẶT: toàn bộ phần Sửa, Nâng, Ví dụ và Ghi chú do BẠN viết ra CHỈ được dùng ngữ pháp có trong danh sách trên. KHÔNG có bất kỳ ngoại lệ nào — kể cả pattern của bài kế tiếp, dù có đánh dấu "sắp học".\n' +
+        '- Danh sách này KHÔNG dùng để cấm học viên: học viên tự dùng đúng một mẫu ngoài danh sách nhưng hợp cấp độ thì vẫn chấp nhận, không tính là lỗi.\n' +
         '- Nếu học viên sai ở ngữ pháp CHƯA học thì vẫn sửa, nhưng ghi chú thêm "phần này học ở bài X, giờ chưa cần nhớ".'
     );
 
-    const up = getUpcoming(s.level, s.lesson, 2);
-    if (up.length) {
-      parts.push('# Sắp học (chỉ được dùng tối đa 1 gợi ý, phải đánh dấu rõ)\n' + formatUpcomingForPrompt(up));
-    }
+    parts.push(vocabSection(s));
+    parts.push(focusSection(s));
 
     // Chi co nghia khi duoc phep dan so bai (curriculum = xirian).
-    parts.push(CONFUSABLE);
+    const conf = confusableSection(s);
+    if (conf) parts.push(conf);
+  } else {
+    parts.push(vocabSection(s));
   }
 
   // c. Cach sua theo cap
@@ -181,8 +265,12 @@ const DEEP_FORMAT =
   'Với câu trên, đưa ra các cách diễn đạt tự nhiên hơn (upgrades), 2 câu ví dụ khác cùng ý (examples), và ghi chú (note).\n' +
   'Số lượng upgrades và độ dài note theo đúng mục "Cách sửa" trong hướng dẫn hệ thống.\n' +
   'Các trường "vi" và "note" viết bằng tiếng Việt có dấu.\n' +
+  '"patterns" liệt kê pattern CỦA BÀI TRỌNG TÂM mà câu đó dùng (mảng rỗng nếu không dùng cái nào).\n' +
+  '"situation_changed" chỉ dùng cho examples, true khi phải đổi sang tình huống khác câu gốc.\n' +
   'CHỈ trả về JSON thuần, không markdown, không giải thích thêm:\n' +
-  '{"upgrades":[{"ko":"","vi":""}],"examples":[{"ko":"","vi":""}],"note":"ghi chú bằng tiếng Việt"}';
+  '{"upgrades":[{"ko":"","vi":"","patterns":[{"form":"-고 싶다","lesson":15}]}],' +
+  '"examples":[{"ko":"","vi":"","patterns":[{"form":"-고 싶다","lesson":15}],"situation_changed":false}],' +
+  '"note":"ghi chú bằng tiếng Việt"}';
 
 export function buildUserMessage(mode: Mode, text: string, context: string[]): string {
   const head = context.length

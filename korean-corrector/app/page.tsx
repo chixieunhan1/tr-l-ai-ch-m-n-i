@@ -4,7 +4,8 @@ import { LEVEL_LABEL, LEVEL_ORDER, getLesson, lessonCount } from '@/lib/grammar'
 import type { LevelId } from '@/lib/grammar';
 
 interface AE { wrong: string; right: string; why: string }
-interface KV { ko: string; vi: string }
+interface PatTag { form: string; lesson: number }
+interface KV { ko: string; vi: string; patterns?: PatTag[]; situation_changed?: boolean }
 interface FixData { corrected: string; errors: AE[] }
 interface DeepData { upgrades: KV[]; examples: KV[]; note: string }
 interface RI {
@@ -34,12 +35,14 @@ interface Setup {
   level: LevelId;
   curriculum: Curriculum;
   lesson: number;
+  review: number[];   // toi da 2 bai on them, deu < lesson
   topic: string;
   register: Register;
 }
-const SETUP_KEY = 'xirian.setup.v1';
+const MAX_REVIEW = 2;
+const SETUP_KEY = 'xirian.setup.v2';
 const DEFAULT_SETUP: Setup = {
-  level: 'sc1', curriculum: 'xirian', lesson: 1, topic: '', register: 'auto',
+  level: 'sc1', curriculum: 'xirian', lesson: 1, review: [], topic: '', register: 'auto',
 };
 const REGISTER_LABEL: Record<Register, string> = {
   auto: 'Tự động',
@@ -53,10 +56,14 @@ function loadSetup(): Setup | null {
     if (!raw) return null;
     const s = JSON.parse(raw);
     if (!LEVEL_ORDER.includes(s?.level)) return null;
+    const lesson = Math.min(Math.max(Number(s.lesson) || 1, 1), lessonCount(s.level));
     return {
       level: s.level,
       curriculum: s.curriculum === 'other' ? 'other' : 'xirian',
-      lesson: Math.min(Math.max(Number(s.lesson) || 1, 1), lessonCount(s.level)),
+      lesson,
+      review: Array.isArray(s.review)
+        ? Array.from(new Set(s.review.map(Number).filter((n: number) => n >= 1 && n < lesson))).slice(0, MAX_REVIEW) as number[]
+        : [],
       topic: typeof s.topic === 'string' ? s.topic : '',
       register: s.register === 'banmal' || s.register === 'jondaetmal' ? s.register : 'auto',
     };
@@ -68,7 +75,8 @@ function setupSummary(s: Setup): string {
   const bits = [LEVEL_LABEL[s.level]];
   if (s.curriculum === 'xirian') {
     const l = getLesson(s.level, s.lesson);
-    bits.push('서울대 bài ' + s.lesson + (l ? ' · ' + l.title : ''));
+    bits.push('서울대 bài ' + s.lesson + (l ? ' · ' + l.title : '') +
+      (s.review.length ? ' (ôn thêm B' + s.review.join(', B') + ')' : ''));
   } else {
     bits.push('giáo trình khác');
   }
@@ -303,6 +311,21 @@ export default function Home() {
     setSetup(prev => {
       const next = { ...prev, ...patch };
       if (patch.level) next.lesson = Math.min(next.lesson, lessonCount(patch.level));
+      // Đổi lớp/bài thì bỏ các bài ôn không còn hợp lệ (phải < bài hiện tại).
+      next.review = next.review.filter(n => n < next.lesson).slice(0, MAX_REVIEW);
+      setupRef.current = next;
+      try { localStorage.setItem(SETUP_KEY, JSON.stringify(next)) } catch (e) {}
+      return next;
+    });
+  }, []);
+
+  // Tick/bỏ tick một bài ôn thêm; quá MAX_REVIEW thì bỏ qua.
+  const toggleReview = useCallback((n: number) => {
+    setSetup(prev => {
+      const on = prev.review.includes(n);
+      if (!on && prev.review.length >= MAX_REVIEW) return prev;
+      const review = on ? prev.review.filter(x => x !== n) : [...prev.review, n].sort((a, b) => a - b);
+      const next = { ...prev, review };
       setupRef.current = next;
       try { localStorage.setItem(SETUP_KEY, JSON.stringify(next)) } catch (e) {}
       return next;
@@ -341,6 +364,7 @@ export default function Home() {
         level: setupRef.current.level,
         curriculum: setupRef.current.curriculum,
         lesson: setupRef.current.curriculum === 'xirian' ? setupRef.current.lesson : null,
+        review: setupRef.current.curriculum === 'xirian' ? setupRef.current.review : [],
         topic: setupRef.current.topic,
         register: setupRef.current.register,
       }),
@@ -579,6 +603,21 @@ export default function Home() {
                 {Array.from({length:lessonCount(setup.level)},(_,i)=>i+1).map(n=><option key={n} value={n}>Bài {n}</option>)}
               </select>
             </div>}
+            {setup.curriculum==='xirian'&&setup.lesson>1&&<div style={{flexBasis:'100%'}}>
+              <label style={LAB}>Ôn thêm bài (tối đa {MAX_REVIEW}) — trọng tâm luôn có bài {setup.lesson}</label>
+              <div style={{display:'flex',flexWrap:'wrap',gap:5}}>
+                {Array.from({length:setup.lesson-1},(_,i)=>i+1).map(n=>{
+                  const on=setup.review.includes(n);
+                  const full=!on&&setup.review.length>=MAX_REVIEW;
+                  return <button key={n} onClick={()=>toggleReview(n)} disabled={full}
+                    title={getLesson(setup.level,n)?.title||''}
+                    style={{fontSize:12,minWidth:30,padding:'4px 7px',borderRadius:6,cursor:full?'default':'pointer',
+                      border:on?'1px solid var(--ac)':'1px solid var(--bd)',
+                      background:on?'var(--ac)':'var(--sf2)',
+                      color:on?'#fff':(full?'var(--t3)':'var(--t2)'),opacity:full?.45:1}}>{n}</button>;
+                })}
+              </div>
+            </div>}
             <div>
               <label style={LAB}>Nói với ai</label>
               <select value={setup.register} onChange={e=>updateSetup({register:e.target.value as Register})} style={SEL}>
@@ -655,16 +694,18 @@ export default function Home() {
           </R>
           <R l="✨ Nâng" t="up">
             {r.deepLoading?<Sk w="80%"/>:r.deepErr?<E m={r.deepErr}/>:
-              (r.deep!.upgrades||[]).map((u,i)=>(<div key={i} style={{marginBottom:8}}>
+              (r.deep!.upgrades||[]).map((u,i)=>(<div key={i} style={{marginBottom:10}}>
                 <div style={{fontSize:14,color:'var(--tx)',fontFamily:'Noto Sans KR,sans-serif'}}>{u.ko}</div>
                 <div style={{fontSize:12,color:'var(--t2)',marginTop:2}}>{u.vi}</div>
+                <Chips kv={u}/>
               </div>))}
           </R>
           <R l="💬 Ví dụ" t="ex">
             {r.deepLoading?<Sk w="75%"/>:r.deepErr?<E m={r.deepErr}/>:
-              (r.deep!.examples||[]).map((x,i)=>(<div key={i} style={{marginBottom:8}}>
+              (r.deep!.examples||[]).map((x,i)=>(<div key={i} style={{marginBottom:10}}>
                 <div style={{fontSize:14,color:'var(--tx)',fontFamily:'Noto Sans KR,sans-serif'}}>{x.ko}</div>
                 <div style={{fontSize:12,color:'var(--t2)',marginTop:2}}>{x.vi}</div>
+                <Chips kv={x}/>
               </div>))}
           </R>
           <R l="📝 Ghi chú" t="note" v>
@@ -681,6 +722,25 @@ function Sk({ w }: { w: string }) {
   return <div style={{display:'flex',flexDirection:'column',gap:6}}>
     <div style={{height:11,width:w,borderRadius:4,background:'var(--sf2)',animation:'sk 1.1s ease-in-out infinite'}}/>
     <div style={{height:11,width:'45%',borderRadius:4,background:'var(--sf2)',animation:'sk 1.1s ease-in-out .2s infinite'}}/>
+  </div>;
+}
+
+// Nhãn nhỏ dưới mỗi câu Nâng/Ví dụ: pattern của bài trọng tâm câu đó dùng.
+function Chips({ kv }: { kv: KV }) {
+  const pats = kv.patterns || [];
+  if (!pats.length && !kv.situation_changed) return null;
+  const base: React.CSSProperties = {
+    fontSize: 10.5, padding: '2px 7px', borderRadius: 20, border: '1px solid var(--bd)',
+    fontFamily: 'Be Vietnam Pro,sans-serif', whiteSpace: 'nowrap',
+  };
+  return <div style={{display:'flex',flexWrap:'wrap',gap:5,marginTop:5}}>
+    {pats.map((p,i)=>(
+      <span key={i} style={{...base,background:'var(--pb)',color:'var(--pp)',borderColor:'rgba(192,132,252,.25)'}}>
+        <span style={{fontFamily:'Noto Sans KR,sans-serif'}}>{p.form}</span>
+        {p.lesson?<span style={{opacity:.7}}> · B{p.lesson}</span>:null}
+      </span>
+    ))}
+    {kv.situation_changed&&<span style={{...base,background:'rgba(251,191,36,.08)',color:'var(--am)',borderColor:'rgba(251,191,36,.25)'}}>tình huống khác</span>}
   </div>;
 }
 
