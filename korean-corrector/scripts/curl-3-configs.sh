@@ -10,7 +10,9 @@ URL="http://localhost:$PORT/api/analyze"
 SENT='저는 어제 친구 만나요 그리고 밥 먹어요'
 
 call() {
-  curl -s "$URL" -H 'Content-Type: application/json' -d "$1"
+  # Body di qua STDIN chu khong qua tham so dong lenh: curl.exe tren Windows doc
+  # tham so theo ANSI codepage nen tieng Han truyen thang se thanh "???".
+  curl -s "$URL" -H 'Content-Type: application/json' -d @- <<< "$1"
 }
 
 echo "=============================================================="
@@ -57,4 +59,25 @@ const hits=(d.system.match(/bài \d+/gi)||[]).concat(d.system.match(/^B\d+ /gm)|
 console.log(hits.length ? "  LO   nhac so bai: "+hits.join(", ") : "  sach  khong nhac so bai nao");
 console.log("co pool khong    :", d.system.includes("# Ngữ pháp học viên ĐÃ HỌC") ? "CO (sai)" : "khong (dung)");
 console.log("dong dau         :", d.system.split("\n")[0]);
+'
+
+echo
+echo "=============================================================="
+echo "[4] Cham CA DOAN · SC1 bài 5 — 3 câu, pool phải dừng ở bài 5"
+echo "=============================================================="
+call '{"mode":"passage","originals":["친구를 만났어요","밥을 먹었어요","영화를 봤어요"],"correcteds":["친구를 만났어요","밥을 먹었어요","영화를 봤어요"],"level":"sc1","curriculum":"xirian","lesson":5,"review":[],"topic":"","register":"jondaetmal","dryRun":true}' \
+  | node -e '
+const d=JSON.parse(require("fs").readFileSync(0,"utf8"));
+console.log("model            :", d.model);
+console.log("pattern trong pool:", d.poolPatterns, "· system", d.systemChars, "ký tự");
+console.log("so cau trong doan :", (d.user.match(/^\d+\. gốc: /gm)||[]).length);
+for (const s of ["친구를 만났어요","밥을 먹었어요","영화를 봤어요"])
+  console.log((d.user.includes(s)?"  CO  ":"  THIEU"), s);
+const i=d.system.indexOf("# Ngữ pháp"), j=d.system.indexOf("\n\n#",i);
+const pool=d.system.slice(i,j);
+console.log("pool             :", pool.split("\n").filter(l=>/^B\d/.test(l)).join(" | "));
+console.log("pool dung o B5   :", /\bB5 /.test(pool) && !/\bB6 /.test(pool) ? "dung" : "SAI");
+console.log("bai trong tam    :", (d.system.match(/# Bài trọng tâm.*/)||["(khong co)"])[0]);
+for (const f of ["rewritten","cohesion","consistency","recurring","upgrades","examples","note"])
+  console.log((d.user.includes("\""+f+"\"")?"  CO  ":"  THIEU"), "truong", f);
 '

@@ -1,6 +1,9 @@
 // Test cho lib/prompt.ts — dung system prompt cho 3 cau hinh trong yeu cau.
 // Kiem tra tren PROMPT chu khong tren dau ra cua model, vi dau ra khong tat dinh.
-import { buildSystemPrompt, buildUserMessage, focusLessons, forcesJondae, readSetup, todayTopic } from '../lib/prompt';
+import {
+  buildPassageMessage, buildSystemPrompt, buildUserMessage, focusLessons, forcesJondae,
+  readPassage, readSetup, todayTopic,
+} from '../lib/prompt';
 import type { Setup } from '../lib/prompt';
 
 let pass = 0;
@@ -156,6 +159,41 @@ check('chưa có data/vocab → dặn dùng từ cơ bản đúng cấp',
   sa.includes('Chưa có danh sách từ vựng') && sa.includes('Chỉ dùng từ vựng cơ bản đúng trình độ'));
 check('… và bám chủ đề theo tiêu đề bài', sa.includes('tiêu đề mỗi bài trong danh sách ngữ pháp ở trên CHÍNH LÀ chủ đề'));
 check('Khác: không nhắc tiêu đề bài', !sc.includes('CHÍNH LÀ chủ đề'));
+
+// --- Cham ca doan -----------------------------------------------------------
+// Dung cau hinh cua dryRun trong yeu cau: SC1 bai 5, 3 cau.
+console.log('\n[J] Chấm cả đoạn (mode passage)');
+const P3 = ['친구를 만났어요', '밥을 먹었어요', '영화를 봤어요'];
+const p3 = readPassage({ originals: P3, correcteds: ['친구를 만났어요', '밥을 먹었어요', ''] });
+eq('readPassage giữ đủ 3 câu gốc', p3.originals, P3);
+eq('câu chưa có bản sửa thì lấy lại câu gốc', p3.correcteds[2], '영화를 봤어요');
+eq('readPassage bỏ câu rỗng', readPassage({ originals: ['가요', '  ', '와요'] }).originals, ['가요', '와요']);
+eq('bỏ câu rỗng nhưng KHÔNG lệch cặp gốc/sửa',
+  readPassage({ originals: ['가요', '', '와요'], correcteds: ['갑니다', 'X', '옵니다'] }).correcteds,
+  ['갑니다', '옵니다']);
+eq('body không có originals → đoạn rỗng', readPassage({}).originals, []);
+
+const pm = buildPassageMessage(p3);
+check('prompt nêu rõ đoạn có 3 câu', pm.includes('ĐOẠN CẦN CHẤM — 3 câu'));
+for (let i = 0; i < P3.length; i++) {
+  check('prompt chứa câu ' + (i + 1) + ': ' + P3[i], pm.includes(`${i + 1}. gốc: ${P3[i]}`));
+}
+check('prompt kèm cả bản đã sửa của từng câu', pm.includes('đã sửa: 영화를 봤어요'));
+for (const f of ['"rewritten"', '"cohesion"', '"consistency"', '"recurring"', '"upgrades"', '"examples"', '"note"']) {
+  check('prompt yêu cầu trường ' + f, pm.includes(f));
+}
+check('rewritten phải giữ nguyên số ý', pm.includes('không thêm ý mới, không bỏ ý nào'));
+check('recurring chỉ tính lỗi lặp ≥2 lần', pm.includes('TỪ 2 LẦN TRỞ LÊN'));
+check('consistency rỗng khi không có lỗi', pm.includes('Không có lỗi thì để chuỗi rỗng'));
+check('không có scene thì vẫn có dòng HOÀN CẢNH', pm.includes('HOÀN CẢNH HIỆN TẠI'));
+check('scene được nhúng vào prompt đoạn',
+  buildPassageMessage(p3, { topic: 'cuối tuần', setting: 'lớp học', interlocutor: 'cô giáo', register: '존댓말' })
+    .includes('chủ đề = cuối tuần'));
+
+// System prompt cua doan dung y het mode deep -> van la SC1 bai 5.
+check('đoạn dùng lại pool dừng ở bài 5', /\bB5 /.test(poolSection(sa)) && !/\bB6 /.test(poolSection(sa)));
+check('đoạn vẫn có bài trọng tâm', sa.includes('# Bài trọng tâm: bài 5'));
+check('đoạn vẫn có luật tích luỹ nghiêm ngặt', sa.includes('TÍCH LUỸ NGHIÊM NGẶT'));
 
 // --- readSetup --------------------------------------------------------------
 console.log('\n[F] readSetup');

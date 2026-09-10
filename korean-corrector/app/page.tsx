@@ -12,18 +12,36 @@ interface AE { wrong: string; right: string; why: string }
 interface PatTag { form: string; lesson: number }
 interface KV { ko: string; vi: string; patterns?: PatTag[]; situation_changed?: boolean }
 interface FixData { corrected: string; errors: AE[]; register_detected?: string; scene?: SceneReport }
-interface DeepData { upgrades: KV[]; examples: KV[]; note: string }
+interface Recur { error: string; count: number; fix: string }
+interface PassageData {
+  rewritten: string;
+  cohesion: string;
+  consistency?: string;
+  recurring?: Recur[];
+  upgrades: KV[];
+  examples: KV[];
+  note: string;
+}
 interface RI {
   id: number;
   text: string;
   merged?: boolean;
   sceneChanged?: boolean;
   fix?: FixData;
-  deep?: DeepData;
   fixErr?: string;
-  deepErr?: string;
   fixLoading: boolean;
-  deepLoading: boolean;
+  /** Id của đoạn đã chốt câu này; chưa chốt thì undefined. */
+  pid?: number;
+}
+/** Một đoạn: nhóm thẻ câu + thẻ chấm cả đoạn. */
+interface PI {
+  id: number;
+  sentenceIds: number[];
+  data?: PassageData;
+  err?: string;
+  loading: boolean;
+  /** Nhóm thẻ câu đang mở hay đang thu gọn. */
+  open: boolean;
 }
 interface Job { id: number; text: string; context: string[] }
 interface LogLine { n: number; t: number; tag: string; msg: string }
@@ -270,6 +288,7 @@ export default function Home() {
   const [isOn, setIsOn] = useState(false);
   const [buf, setBuf] = useState('');
   const [results, setResults] = useState<RI[]>([]);
+  const [passages, setPassages] = useState<PI[]>([]);
   const [active, setActive] = useState(0);
   const [wait, setWait] = useState<{ ms: number; reason: string; until: number } | null>(null);
   const [, forceTick] = useState(0);
@@ -309,6 +328,13 @@ export default function Home() {
   const fireRef = useRef<(seal?: boolean, reason?: string) => void>(() => {});
   const drainRef = useRef<() => void>(() => {});
   const mkRef = useRef<(() => any) | null>(null);
+  // --- Chấm cả đoạn ---
+  const pidRef = useRef(0);
+  const openIdsRef = useRef<number[]>([]);          // câu của đoạn đang mở, theo thứ tự nói
+  const sentOutRef = useRef<Map<number, { text: string; corrected: string }>>(new Map());
+  const waitingRef = useRef<{ pid: number; ids: number[] }[]>([]);  // đoạn chờ đủ câu đã sửa
+  const runReadyRef = useRef<() => void>(() => {});
+  const endPassageRef = useRef<() => void>(() => {});
 
   useEffect(() => { isOnRef.current = isOn }, [isOn]);
   useEffect(() => { t0Ref.current = Date.now() }, []);
@@ -404,20 +430,25 @@ export default function Home() {
     setResults(prev => prev.map(r => (r.id === id ? { ...r, ...p } : r)));
   }, []);
 
-  const call = useCallback(async (mode: 'fix' | 'deep', text: string, context: string[], signal: AbortSignal) => {
+  // Cài đặt buổi học + hoàn cảnh, giống hệt nhau cho mọi mode.
+  const lessonPayload = useCallback(() => {
+    const s = setupRef.current;
+    return {
+      level: s.level,
+      curriculum: s.curriculum,
+      lesson: s.curriculum === 'xirian' ? s.lesson : null,
+      review: s.curriculum === 'xirian' ? s.review : [],
+      topic: s.topic,
+      register: s.register,
+      scene: sceneRef.current.scene,
+    };
+  }, []);
+
+  const post = useCallback(async (payload: Record<string, unknown>, signal?: AbortSignal) => {
     const r = await fetch('/api/analyze', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        text, mode, context,
-        level: setupRef.current.level,
-        curriculum: setupRef.current.curriculum,
-        lesson: setupRef.current.curriculum === 'xirian' ? setupRef.current.lesson : null,
-        review: setupRef.current.curriculum === 'xirian' ? setupRef.current.review : [],
-        topic: setupRef.current.topic,
-        register: setupRef.current.register,
-        scene: sceneRef.current.scene,
-      }),
+      body: JSON.stringify({ ...lessonPayload(), ...payload }),
       signal,
     });
     if (!r.ok) {
@@ -426,30 +457,61 @@ export default function Home() {
       throw new Error(msg);
     }
     return r.json();
+  }, [lessonPayload]);
+
+  // Ghi lại kết quả của một câu để đoạn chứa nó gom được. Câu lỗi thì lấy luôn câu gốc.
+  const noteSentence = useCallback((id: number, text: string, corrected: string) => {
+    sentOutRef.current.set(id, { text, corrected: corrected.trim() || text });
+    runReadyRef.current();
   }, []);
 
-  // Mỗi câu chạy hai luồng song song; luồng nào về trước điền vào thẻ trước.
+  // Thẻ câu giờ chỉ còn Gốc / Sửa / Lỗi — một lượt gọi mode "fix" cho mỗi câu.
   const drain = useCallback(() => {
     while (activeRef.current < MAX_CONCURRENT && queueRef.current.length > 0) {
       const job = queueRef.current.shift()!;
       const ctrl = new AbortController();
       ctrlRef.current.set(job.id, ctrl);
       activeRef.current++; setActive(activeRef.current);
-      const fix = call('fix', job.text, job.context, ctrl.signal)
-        .then((d: FixData) => patch(job.id, { fix: d, fixLoading: false, sceneChanged: applyScene(job.id, d.scene) }))
-        .catch((e: any) => { if (e?.name !== 'AbortError') patch(job.id, { fixErr: e.message, fixLoading: false }) });
-      const deep = call('deep', job.text, job.context, ctrl.signal)
-        .then((d: DeepData) => patch(job.id, { deep: d, deepLoading: false }))
-        .catch((e: any) => { if (e?.name !== 'AbortError') patch(job.id, { deepErr: e.message, deepLoading: false }) });
-      Promise.all([fix, deep]).then(() => {
-        // Chi xoa neu van la controller cua chinh luot nay (tranh xoa nham luot gop moi).
-        if (ctrlRef.current.get(job.id) === ctrl) ctrlRef.current.delete(job.id);
-        activeRef.current--; setActive(activeRef.current);
-        drainRef.current();
-      });
+      post({ mode: 'fix', text: job.text, context: job.context }, ctrl.signal)
+        .then((d: FixData) => {
+          patch(job.id, { fix: d, fixLoading: false, sceneChanged: applyScene(job.id, d.scene) });
+          noteSentence(job.id, job.text, d.corrected || job.text);
+        })
+        .catch((e: any) => {
+          if (e?.name === 'AbortError') return;   // gộp câu: lượt mới sẽ ghi đè
+          patch(job.id, { fixErr: e.message, fixLoading: false });
+          noteSentence(job.id, job.text, job.text);
+        })
+        .then(() => {
+          // Chi xoa neu van la controller cua chinh luot nay (tranh xoa nham luot gop moi).
+          if (ctrlRef.current.get(job.id) === ctrl) ctrlRef.current.delete(job.id);
+          activeRef.current--; setActive(activeRef.current);
+          drainRef.current();
+        });
     }
-  }, [call, patch, applyScene]);
+  }, [post, patch, applyScene, noteSentence]);
   drainRef.current = drain;
+
+  // Gửi một đoạn đi chấm. Chỉ gọi khi MỌI câu trong đoạn đã có bản sửa.
+  const runPassage = useCallback((pid: number, originals: string[], correcteds: string[]) => {
+    post({ mode: 'passage', originals, correcteds })
+      .then((d: PassageData) => setPassages(p => p.map(x => (x.id === pid ? { ...x, data: d, loading: false } : x))))
+      .catch((e: any) => setPassages(p => p.map(x => (x.id === pid ? { ...x, err: e.message, loading: false } : x))));
+  }, [post]);
+
+  // Đoạn nào đã đủ câu thì gửi, chưa đủ thì để lại chờ.
+  const runReady = useCallback(() => {
+    const still: { pid: number; ids: number[] }[] = [];
+    for (const w of waitingRef.current) {
+      if (!w.ids.every(id => sentOutRef.current.has(id))) { still.push(w); continue }
+      const rows = w.ids.map(id => sentOutRef.current.get(id)!);
+      w.ids.forEach(id => sentOutRef.current.delete(id));
+      addLog('đoạn gửi', '#' + w.pid + ' · ' + rows.length + ' câu');
+      runPassage(w.pid, rows.map(r => r.text), rows.map(r => r.corrected));
+    }
+    waitingRef.current = still;
+  }, [runPassage, addLog]);
+  runReadyRef.current = runReady;
 
   const submit = useCallback((raw: string) => {
     const text = raw.trim();
@@ -472,12 +534,13 @@ export default function Home() {
       const merged = prev.text + ' ' + text;
       ctrlRef.current.get(prev.id)?.abort();          // huỷ fetch đang chạy của thẻ cũ
       queueRef.current = queueRef.current.filter(j => j.id !== prev.id);
+      // Bản sửa của phần đầu câu đã cũ — bỏ đi để đoạn không gom nhầm.
+      sentOutRef.current.delete(prev.id);
       historyRef.current = historyRef.current.slice(0, -1).concat(merged).slice(-10);
       lastRef.current = { ...prev, text: merged, at: now };
       patch(prev.id, {
         text: merged, merged: true,
-        fix: undefined, deep: undefined, fixErr: undefined, deepErr: undefined,
-        fixLoading: true, deepLoading: true,
+        fix: undefined, fixErr: undefined, fixLoading: true,
       });
       queueRef.current.push({ id: prev.id, text: merged, context: prev.context });
       addLog('gộp câu', 'nối vào thẻ #' + prev.id + ' → "' + merged + '"');
@@ -490,7 +553,8 @@ export default function Home() {
     const context = historyRef.current.slice(-CONTEXT_SIZE);
     historyRef.current = historyRef.current.concat(text).slice(-10);
     lastRef.current = { id, text, at: now, context, sealed: false };
-    setResults(p => [{ id, text, fixLoading: true, deepLoading: true }, ...p]);
+    setResults(p => [{ id, text, fixLoading: true }, ...p]);
+    openIdsRef.current = openIdsRef.current.concat(id);   // thuộc đoạn đang mở
     queueRef.current.push({ id, text, context });
     addLog('thẻ mới', '#' + id);
     drainRef.current();
@@ -520,6 +584,36 @@ export default function Home() {
     if (seal && lastRef.current) lastRef.current.sealed = true;
   }, [clearSilence, submit, addLog]);
   fireRef.current = fire;
+
+  // "Hết đoạn": chốt nốt câu đang dở rồi gom mọi câu từ lần Hết đoạn trước thành một đoạn.
+  // Chưa có câu nào thì không làm gì. Scene GIỮ NGUYÊN — chỉ đoạn là mới.
+  const endPassage = useCallback(() => {
+    if (bufRef.current.trim()) fire(true, 'nút Hết đoạn');
+    const ids = openIdsRef.current;
+    if (!ids.length) { addLog('hết đoạn', 'bỏ qua, chưa có câu nào'); return }
+    openIdsRef.current = [];
+    const pid = ++pidRef.current;
+    setResults(prev => prev.map(r => (ids.includes(r.id) ? { ...r, pid } : r)));
+    setPassages(prev => [{ id: pid, sentenceIds: ids, loading: true, open: false }, ...prev]);
+    waitingRef.current = waitingRef.current.concat({ pid, ids });
+    addLog('hết đoạn', 'đoạn #' + pid + ' gồm ' + ids.length + ' câu');
+    runReadyRef.current();
+  }, [fire, addLog]);
+  endPassageRef.current = endPassage;
+
+  // Enter khi con trỏ không nằm trong ô nhập = bấm "Hết đoạn".
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Enter' || e.shiftKey || e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return;
+      const el = e.target as HTMLElement | null;
+      const tag = el?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el?.isContentEditable) return;
+      e.preventDefault();   // chặn luôn Enter kích hoạt nút đang được focus
+      endPassageRef.current();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   // Mỗi lần Web Speech trả kết quả mới thì tính lại ngưỡng và đặt lại timer.
   const armSilence = useCallback((text: string) => {
@@ -615,6 +709,9 @@ export default function Home() {
   }, [isOn, clearSilence]);
 
   const has = !!buf.trim();
+  // Các câu chưa thuộc đoạn nào — chính là đoạn đang mở.
+  const openSents = results.filter(r => r.pid === undefined);
+  const canEnd = has || openSents.length > 0;
   // Bỏ trống "Bài hôm nay" thì lấy luôn tiêu đề + pattern của bài đang học làm gợi ý.
   const lessonNow = setup.curriculum === 'xirian' ? getLesson(setup.level, setup.lesson) : undefined;
   const autoTopic = lessonNow
@@ -692,7 +789,18 @@ export default function Home() {
           <button onClick={toggleMic} style={{width:72,height:72,borderRadius:'50%',border:isOn?'1.5px solid #f87171':'1.5px solid var(--bd)',background:isOn?'rgba(248,113,113,.1)':'var(--sf2)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',animation:isOn?'mp 1.5s infinite':'none'}}><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke={isOn?'#f87171':'var(--t2)'} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><line x1="12" y1="19" x2="12" y2="22"/><line x1="8" y1="22" x2="16" y2="22"/></svg></button>
           <button onClick={()=>fire(false,'nút Chấm')} disabled={!has} style={{padding:'14px 28px',borderRadius:12,border:'none',background:has?'var(--ac)':'var(--sf2)',color:has?'white':'var(--t3)',fontSize:15,fontWeight:600,cursor:has?'pointer':'default'}}>Chấm</button>
           <button onClick={()=>fire(true,'nút Xong câu')} disabled={!has} title="Gửi ngay và chốt câu, phần nói sau sẽ tính là câu mới" style={{padding:'14px 22px',borderRadius:12,border:has?'1px solid var(--ac)':'1px solid var(--bd)',background:'transparent',color:has?'var(--ac)':'var(--t3)',fontSize:14,fontWeight:600,cursor:has?'pointer':'default'}}>Xong câu</button>
+          <button onClick={endPassage} disabled={!canEnd}
+            title="Chốt câu đang dở rồi chấm cả đoạn vừa nói (phím Enter)"
+            style={{padding:'18px 30px',borderRadius:14,border:'none',fontSize:17,fontWeight:700,
+              display:'flex',alignItems:'center',gap:10,
+              background:canEnd?'var(--gn)':'var(--sf2)',color:canEnd?'#0f0f11':'var(--t3)',
+              cursor:canEnd?'pointer':'default'}}>
+            Hết đoạn
+            <span style={{fontSize:12,fontWeight:600,padding:'2px 7px',borderRadius:6,
+              background:canEnd?'rgba(15,15,17,.14)':'transparent',color:canEnd?'#0f0f11':'var(--t3)'}}>⏎</span>
+          </button>
         </div>
+        {openSents.length>0&&<div style={{fontSize:12,color:'var(--t3)'}}>Đoạn đang mở: {openSents.length} câu</div>}
         <textarea value={buf} onChange={e=>{
           // Sửa tay: coi như phần đã chốt, và bỏ qua kết quả cũ của phiên hiện tại.
           committedRef.current=e.target.value; sessionRef.current=''; baseIdxRef.current=lenRef.current;
@@ -755,50 +863,98 @@ export default function Home() {
             ))}
         </div>
       </div>}
-      {results.length>0&&<><div style={{fontSize:11,color:'var(--t3)',textTransform:'uppercase',letterSpacing:'.08em'}}>Kết quả phân tích</div><div style={{display:'flex',flexDirection:'column',gap:12}}>{results.map(r=>(
-        <div key={r.id} style={{background:'var(--sf)',border:'1px solid var(--bd)',borderRadius:12,overflow:'hidden',animation:'si .25s ease'}}>
-          <R l="🔴 Gốc" t="orig">
-            {r.text}
-            {r.merged&&<div style={{fontSize:11,color:'var(--t3)',marginTop:4,fontFamily:'Be Vietnam Pro,sans-serif'}}>Đã nối với câu trước</div>}
-            {r.sceneChanged&&<div style={{marginTop:5}}><span style={{fontSize:10.5,padding:'2px 7px',borderRadius:20,fontFamily:'Be Vietnam Pro,sans-serif',background:'var(--bb)',color:'var(--bl)',border:'1px solid rgba(96,165,250,.25)'}}>chủ đề mới</span></div>}
-          </R>
-          <R l="✅ Sửa" t="fix">
-            {r.fixLoading?<Sk w="70%"/>:r.fixErr?<E m={r.fixErr}/>:
-              (r.fix!.errors&&r.fix!.errors.length>0?r.fix!.corrected:<span className="ok">Câu đúng, không cần sửa</span>)}
-          </R>
-          <R l="⚠️ Lỗi" t="err" v>
-            {r.fixLoading?<Sk w="90%"/>:r.fixErr?<E m={r.fixErr}/>:
-              (r.fix!.errors&&r.fix!.errors.length>0
-                ?r.fix!.errors.map((e,i)=>(<div key={i} style={{marginBottom:8}}>
-                    <span className="wrong">{e.wrong}</span>{' → '}<span className="right">{e.right}</span>
-                    <div style={{fontSize:12,color:'var(--t2)',marginTop:2}}>{e.why}</div>
-                  </div>))
-                :<span className="ok">Không có lỗi</span>)}
-          </R>
-          <R l="✨ Nâng" t="up">
-            {r.deepLoading?<Sk w="80%"/>:r.deepErr?<E m={r.deepErr}/>:
-              (r.deep!.upgrades||[]).map((u,i)=>(<div key={i} style={{marginBottom:10}}>
-                <div style={{fontSize:14,color:'var(--tx)',fontFamily:'Noto Sans KR,sans-serif'}}>{u.ko}</div>
-                <div style={{fontSize:12,color:'var(--t2)',marginTop:2}}>{u.vi}</div>
-                <Chips kv={u}/>
-              </div>))}
-          </R>
-          <R l="💬 Ví dụ" t="ex">
-            {r.deepLoading?<Sk w="75%"/>:r.deepErr?<E m={r.deepErr}/>:
-              (r.deep!.examples||[]).map((x,i)=>(<div key={i} style={{marginBottom:10}}>
-                <div style={{fontSize:14,color:'var(--tx)',fontFamily:'Noto Sans KR,sans-serif'}}>{x.ko}</div>
-                <div style={{fontSize:12,color:'var(--t2)',marginTop:2}}>{x.vi}</div>
-                <Chips kv={x}/>
-              </div>))}
-          </R>
-          <R l="📝 Ghi chú" t="note" v>
-            {r.deepLoading?<Sk w="95%"/>:r.deepErr?<E m={r.deepErr}/>:r.deep!.note}
-          </R>
+      {(results.length>0||passages.length>0)&&<>
+        <div style={{fontSize:11,color:'var(--t3)',textTransform:'uppercase',letterSpacing:'.08em'}}>Kết quả phân tích</div>
+        <div style={{display:'flex',flexDirection:'column',gap:12}}>
+          {openSents.map(r=><SCard key={r.id} r={r}/>)}
+          {passages.map(p=>{
+            const kids=results.filter(r=>r.pid===p.id);           // mới nhất trước
+            const originals=kids.map(r=>r.text).reverse();        // đúng thứ tự nói
+            return <div key={'p'+p.id} style={{display:'flex',flexDirection:'column',gap:12}}>
+              <button onClick={()=>setPassages(prev=>prev.map(x=>x.id===p.id?{...x,open:!x.open}:x))}
+                style={{textAlign:'left',padding:'9px 14px',borderRadius:10,cursor:'pointer',
+                  border:'1px solid var(--bd)',background:'var(--sf2)',color:'var(--t2)',fontSize:12,
+                  display:'flex',justifyContent:'space-between',alignItems:'center',gap:10}}>
+                <span>{p.open?'▾':'▸'} Đoạn {p.id} · {kids.length} câu</span>
+                <span style={{color:'var(--ac)',flexShrink:0}}>{p.open?'Thu gọn':'Xem từng câu'}</span>
+              </button>
+              {p.open&&kids.map(r=><SCard key={r.id} r={r}/>)}
+              <PCard p={p} originals={originals}/>
+            </div>;
+          })}
         </div>
-      ))}</div></>}
+      </>}
     </main>
     <style jsx>{'.wrong{display:inline;background:rgba(248,113,113,.15);color:var(--rd);border-radius:3px;padding:1px 5px;font-size:13px}.right{display:inline;background:rgba(74,222,128,.12);color:var(--gn);border-radius:3px;padding:1px 5px;font-size:13px}.ok{display:inline-block;background:var(--gb);color:var(--gn);font-size:12px;padding:2px 10px;border-radius:20px;border:1px solid rgba(74,222,128,.2)}'}</style>
   </>);
+}
+
+const CARD: React.CSSProperties = {
+  background: 'var(--sf)', border: '1px solid var(--bd)', borderRadius: 12,
+  overflow: 'hidden', animation: 'si .25s ease',
+};
+
+// Thẻ một câu: chỉ Gốc / Sửa / Lỗi. Nâng · Ví dụ · Ghi chú đã dời lên thẻ đoạn.
+function SCard({ r }: { r: RI }) {
+  const errs = r.fix?.errors || [];
+  return <div style={CARD}>
+    <R l="🔴 Gốc" t="orig">
+      {r.text}
+      {r.merged&&<div style={{fontSize:11,color:'var(--t3)',marginTop:4,fontFamily:'Be Vietnam Pro,sans-serif'}}>Đã nối với câu trước</div>}
+      {r.sceneChanged&&<div style={{marginTop:5}}><span style={{fontSize:10.5,padding:'2px 7px',borderRadius:20,fontFamily:'Be Vietnam Pro,sans-serif',background:'var(--bb)',color:'var(--bl)',border:'1px solid rgba(96,165,250,.25)'}}>chủ đề mới</span></div>}
+    </R>
+    <R l="✅ Sửa" t="fix">
+      {r.fixLoading?<Sk w="70%"/>:r.fixErr?<E m={r.fixErr}/>:
+        (errs.length>0?r.fix!.corrected:<span className="ok">Câu đúng, không cần sửa</span>)}
+    </R>
+    <R l="⚠️ Lỗi" t="err" v>
+      {r.fixLoading?<Sk w="90%"/>:r.fixErr?<E m={r.fixErr}/>:
+        (errs.length>0
+          ?errs.map((e,i)=>(<div key={i} style={{marginBottom:8}}>
+              <span className="wrong">{e.wrong}</span>{' → '}<span className="right">{e.right}</span>
+              <div style={{fontSize:12,color:'var(--t2)',marginTop:2}}>{e.why}</div>
+            </div>))
+          :<span className="ok">Không có lỗi</span>)}
+    </R>
+  </div>;
+}
+
+// Danh sách câu Nâng / Ví dụ — dùng chung cho hai hàng của thẻ đoạn.
+function KVList({ items }: { items: KV[] }) {
+  return <>{items.map((x,i)=>(<div key={i} style={{marginBottom:10}}>
+    <div style={{fontSize:14,color:'var(--tx)',fontFamily:'Noto Sans KR,sans-serif'}}>{x.ko}</div>
+    <div style={{fontSize:12,color:'var(--t2)',marginTop:2}}>{x.vi}</div>
+    <Chips kv={x}/>
+  </div>))}</>;
+}
+
+// Thẻ chấm cả đoạn, hiện ngay dưới nhóm thẻ câu của đoạn đó.
+function PCard({ p, originals }: { p: PI; originals: string[] }) {
+  const d = p.data;
+  const cons = (d?.consistency || '').trim();
+  const rec = d?.recurring || [];
+  const W = 104;
+  // Đang chờ hoặc lỗi thì mọi hàng đều hiện cùng một trạng thái.
+  const body = (w: string, node: React.ReactNode) =>
+    p.loading ? <Sk w={w}/> : p.err ? <E m={p.err}/> : node;
+  return <div style={{...CARD,border:'1px solid rgba(124,108,250,.35)'}}>
+    <R l="📝 Đoạn gốc" t="orig" w={W}>{originals.join(' ')}</R>
+    <R l="✅ Viết lại" t="fix" w={W}>{body('80%', d?.rewritten)}</R>
+    <R l="🔗 Mạch & liên kết" t="coh" v w={W}>{body('90%', d?.cohesion)}</R>
+    {cons!==''&&<R l="🧩 Nhất quán" t="err" v w={W}>{cons}</R>}
+    <R l="⚠️ Lỗi lặp" t="rep" v w={W}>
+      {body('85%', rec.length>0
+        ?rec.map((x,i)=>(<div key={i} style={{marginBottom:8}}>
+            <span className="wrong">{x.error}</span>
+            <span style={{fontSize:11,marginLeft:6,padding:'1px 7px',borderRadius:20,background:'var(--rb)',color:'var(--rd)',border:'1px solid rgba(248,113,113,.25)'}}>{x.count} lần</span>
+            <div style={{fontSize:12,color:'var(--t2)',marginTop:2}}>{x.fix}</div>
+          </div>))
+        :<span className="ok">Không có lỗi lặp lại</span>)}
+    </R>
+    <R l="✨ Nâng" t="up" w={W}>{body('80%', <KVList items={d?.upgrades||[]}/>)}</R>
+    <R l="💬 Ví dụ" t="ex" w={W}>{body('75%', <KVList items={d?.examples||[]}/>)}</R>
+    <R l="📄 Ghi chú" t="note" v w={W}>{body('95%', d?.note)}</R>
+  </div>;
 }
 
 function Sk({ w }: { w: string }) {
@@ -831,18 +987,20 @@ function E({ m }: { m: string }) {
   return <span style={{fontSize:12,color:'var(--rd)'}}>Lỗi: {m}</span>;
 }
 
-function R({ l, t, v, children }: { l: string; t: string; v?: boolean; children: React.ReactNode }) {
+function R({ l, t, v, w, children }: { l: string; t: string; v?: boolean; w?: number; children: React.ReactNode }) {
   const c: { [k: string]: { c: string; b: string } } = {
     orig:{c:'var(--rd)',b:'var(--rb)'},
     fix:{c:'var(--gn)',b:'var(--gb)'},
     err:{c:'var(--am)',b:'rgba(251,191,36,.06)'},
     up:{c:'var(--pp)',b:'var(--pb)'},
     ex:{c:'var(--bl)',b:'var(--bb)'},
+    coh:{c:'var(--ac)',b:'rgba(124,108,250,.08)'},
+    rep:{c:'var(--rd)',b:'var(--rb)'},
     note:{c:'var(--t2)',b:'var(--sf2)'},
   };
   const s = c[t] || { c:'var(--t2)', b:'var(--sf2)' };
   return <div style={{display:'flex',borderBottom:'1px solid var(--bd)'}}>
-    <div style={{width:88,flexShrink:0,padding:'12px 14px',fontSize:11,fontWeight:600,display:'flex',alignItems:'flex-start',gap:5,borderRight:'1px solid var(--bd)',color:s.c,background:s.b}}>{l}</div>
+    <div style={{width:w||88,flexShrink:0,padding:'12px 14px',fontSize:11,fontWeight:600,display:'flex',alignItems:'flex-start',gap:5,borderRight:'1px solid var(--bd)',color:s.c,background:s.b}}>{l}</div>
     <div style={{flex:1,padding:'12px 16px',fontSize:14,lineHeight:1.7,fontFamily:v?'Be Vietnam Pro,sans-serif':'Noto Sans KR,sans-serif'}}>{children}</div>
   </div>;
 }

@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { buildSystemPrompt, buildUserMessage, readScene, readSetup } from '@/lib/prompt';
+import {
+  buildPassageMessage, buildSystemPrompt, buildUserMessage, readPassage, readScene, readSetup,
+} from '@/lib/prompt';
 import type { Mode } from '@/lib/prompt';
 import { countPatterns, getGrammarPool } from '@/lib/grammar';
 
@@ -11,6 +13,7 @@ export const runtime = 'edge';
 const CONFIG: Record<Mode, { model: string; max_tokens: number; extra: Record<string, unknown> }> = {
   fix: { model: 'claude-haiku-4-5-20251001', max_tokens: 700, extra: { temperature: 0 } },
   deep: { model: 'claude-sonnet-5', max_tokens: 1200, extra: { thinking: { type: 'disabled' } } },
+  passage: { model: 'claude-sonnet-5', max_tokens: 1500, extra: { thinking: { type: 'disabled' } } },
 };
 
 function extractJson(raw: string): any {
@@ -44,20 +47,30 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const text: unknown = body?.text;
-    const mode: Mode = body?.mode === 'deep' ? 'deep' : 'fix';
+    const mode: Mode =
+      body?.mode === 'deep' || body?.mode === 'passage' ? body.mode : 'fix';
     const context: string[] = Array.isArray(body?.context)
       ? body.context.filter((c: unknown): c is string => typeof c === 'string' && c.trim() !== '')
       : [];
-
-    if (typeof text !== 'string' || !text.trim()) {
-      return NextResponse.json({ error: 'Thiếu câu cần phân tích' }, { status: 400 });
-    }
 
     const setup = readSetup(body);
     const scene = readScene(body);
     const cfg = CONFIG[mode];
     const system = buildSystemPrompt(setup);
-    const user = buildUserMessage(mode, text, context, scene);
+
+    let user: string;
+    if (mode === 'passage') {
+      const passage = readPassage(body);
+      if (!passage.originals.length) {
+        return NextResponse.json({ error: 'Đoạn chưa có câu nào' }, { status: 400 });
+      }
+      user = buildPassageMessage(passage, scene);
+    } else {
+      if (typeof text !== 'string' || !text.trim()) {
+        return NextResponse.json({ error: 'Thiếu câu cần phân tích' }, { status: 400 });
+      }
+      user = buildUserMessage(mode, text, context, scene);
+    }
 
     // dryRun: xem prompt dung ra sao mà không gọi API, không tốn tiền.
     // Dùng để kiểm tra cấu hình lớp bằng curl.

@@ -20,7 +20,32 @@ export function readScene(body: any): Scene | null {
   return body?.scene ? normalizeScene(body.scene) : null;
 }
 
-export type Mode = 'fix' | 'deep';
+/** Một đoạn = các câu học viên nói giữa hai lần bấm "Hết đoạn". */
+export interface PassageInput {
+  originals: string[];
+  /** Cùng độ dài với originals; câu chưa kịp sửa thì lặp lại câu gốc. */
+  correcteds: string[];
+}
+
+const cleanLine = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
+
+export function readPassage(body: any): PassageInput {
+  const rawO: unknown[] = Array.isArray(body?.originals) ? body.originals : [];
+  const rawC: unknown[] = Array.isArray(body?.correcteds) ? body.correcteds : [];
+  const originals: string[] = [];
+  const correcteds: string[] = [];
+  // Zip TRUOC khi loc: loc originals roi moi index vao correcteds se lech cap
+  // neu co mot cau rong nam giua.
+  rawO.forEach((o, i) => {
+    const text = cleanLine(o);
+    if (!text) return;
+    originals.push(text);
+    correcteds.push(cleanLine(rawC[i]) || text);
+  });
+  return { originals, correcteds };
+}
+
+export type Mode = 'fix' | 'deep' | 'passage';
 export type Curriculum = 'xirian' | 'other';
 export type Register = 'auto' | 'banmal' | 'jondaetmal';
 
@@ -299,6 +324,40 @@ const DEEP_FORMAT =
   '{"upgrades":[{"ko":"","vi":"","patterns":[{"form":"-고 싶다","lesson":15}]}],' +
   '"examples":[{"ko":"","vi":"","patterns":[{"form":"-고 싶다","lesson":15}],"situation_changed":false}],' +
   '"note":"ghi chú bằng tiếng Việt"}';
+
+// Cham CA DOAN. Dung chung system prompt voi fix/deep (tich luy, bai trong tam,
+// 반말/존댓말, moc de nham deu ap y het) nen van an cache.
+const PASSAGE_FORMAT =
+  'Chấm CẢ ĐOẠN trên như một chỉnh thể — KHÔNG chấm lại từng câu lẻ, việc đó đã làm rồi.\n' +
+  '"rewritten": viết lại cả đoạn cho tự nhiên. ĐƯỢC ghép câu bằng liên từ CÓ TRONG danh sách ngữ pháp đã học. ' +
+  'GIỮ NGUYÊN ý và số lượng thông tin của học viên — không thêm ý mới, không bỏ ý nào.\n' +
+  '"cohesion": 2–4 câu tiếng Việt nhận xét mạch và liên kết; chỉ rõ chỗ nào nên ghép và ghép bằng liên từ nào.\n' +
+  '"consistency": lỗi nhất quán trong đoạn (trộn lẫn 반말/존댓말, lẫn thì). Không có lỗi thì để chuỗi rỗng "".\n' +
+  '"recurring": lỗi lặp lại TỪ 2 LẦN TRỞ LÊN trong đoạn, dạng [{"error":"quên 을/를","count":3,"fix":"cách sửa"}]. ' +
+  '"count" là số lần lỗi đó thực sự xuất hiện. Lỗi chỉ xảy ra 1 lần thì KHÔNG đưa vào. Không có thì mảng rỗng.\n' +
+  '"upgrades": 2–3 cách diễn đạt hay hơn cho CẢ ĐOẠN hoặc một đoạn con.\n' +
+  '"examples": đúng 2 đoạn ngắn mẫu cùng chủ đề, dùng pattern VÀ từ vựng của bài trọng tâm.\n' +
+  '"note": ghi chú tổng cho cả đoạn; độ dài theo đúng mục "Cách sửa" trong hướng dẫn hệ thống.\n' +
+  'Các trường "vi", "cohesion", "consistency", "note" và "fix" viết bằng tiếng Việt có dấu.\n' +
+  '"patterns" liệt kê pattern CỦA BÀI TRỌNG TÂM mà câu đó dùng (mảng rỗng nếu không dùng cái nào).\n' +
+  'CHỈ trả về JSON thuần, không markdown, không giải thích thêm:\n' +
+  '{"rewritten":"cả đoạn viết lại","cohesion":"","consistency":"",' +
+  '"recurring":[{"error":"","count":2,"fix":""}],' +
+  '"upgrades":[{"ko":"","vi":"","patterns":[{"form":"-고 싶다","lesson":15}]}],' +
+  '"examples":[{"ko":"","vi":"","patterns":[{"form":"-고 싶다","lesson":15}],"situation_changed":false}],' +
+  '"note":"ghi chú bằng tiếng Việt"}';
+
+export function buildPassageMessage(p: PassageInput, scene?: Scene | null): string {
+  const rows = p.originals
+    .map((o, i) => `${i + 1}. gốc: ${o}\n   đã sửa: ${p.correcteds[i]}`)
+    .join('\n');
+  return (
+    formatSceneForPrompt(scene) + '\n\n' +
+    'ĐOẠN CẦN CHẤM — ' + p.originals.length + ' câu học viên vừa nói, theo đúng thứ tự:\n' +
+    rows + '\n\n' +
+    PASSAGE_FORMAT
+  );
+}
 
 export function buildUserMessage(
   mode: Mode,
