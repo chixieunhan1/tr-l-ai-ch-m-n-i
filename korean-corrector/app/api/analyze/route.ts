@@ -4,6 +4,7 @@ import {
 } from '@/lib/prompt';
 import type { Mode } from '@/lib/prompt';
 import { countPatterns, getGrammarPool } from '@/lib/grammar';
+import { TOOLS, readToolUse } from '@/lib/schema';
 
 export const runtime = 'edge';
 
@@ -11,18 +12,31 @@ export const runtime = 'edge';
 // thinking khi khong khai bao. Tat thinking de thinking khong an het max_tokens
 // (max_tokens la tran cho ca thinking lan text) va de giu do tre thap.
 const CONFIG: Record<Mode, { model: string; max_tokens: number; extra: Record<string, unknown> }> = {
-  fix: { model: 'claude-haiku-4-5-20251001', max_tokens: 700, extra: { temperature: 0 } },
-  deep: { model: 'claude-sonnet-5', max_tokens: 1200, extra: { thinking: { type: 'disabled' } } },
-  passage: { model: 'claude-sonnet-5', max_tokens: 1500, extra: { thinking: { type: 'disabled' } } },
+  fix: { model: 'claude-haiku-4-5-20251001', max_tokens: 800, extra: { temperature: 0 } },
+  deep: { model: 'claude-sonnet-5', max_tokens: 2000, extra: { thinking: { type: 'disabled' } } },
+  passage: { model: 'claude-sonnet-5', max_tokens: 3000, extra: { thinking: { type: 'disabled' } } },
 };
 
-function extractJson(raw: string): any {
-  const start = raw.indexOf('{');
-  const end = raw.lastIndexOf('}');
-  if (start === -1 || end === -1 || end <= start) {
-    throw new Error('Phản hồi không chứa JSON');
-  }
-  return JSON.parse(raw.slice(start, end + 1));
+// Cau tra loi bi cat vi het max_tokens -> goi lai MOT lan voi tran gap doi.
+const RETRY_TOO_LONG = 'Câu trả lời quá dài, đang thử lại';
+
+/** Body gui len Anthropic. Tach ra de dryRun soi duoc y het luc goi that. */
+function buildBody(mode: Mode, system: string, user: string, maxTokens: number) {
+  const cfg = CONFIG[mode];
+  const tool = TOOLS[mode];
+  return {
+    model: cfg.model,
+    max_tokens: maxTokens,
+    ...cfg.extra,
+    // Ho so ngu phap dai va khong doi suot buoi hoc -> cache lai,
+    // cac lan goi sau trong buoi chi tra ~10% gia cho phan nay.
+    system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
+    messages: [{ role: 'user', content: user }],
+    // Structured output: ep model goi dung tool nay, ket qua ve o tool_use.input
+    // dung schema. Khong con phai boc JSON tu text nen het loi parse.
+    tools: [tool],
+    tool_choice: { type: 'tool', name: tool.name },
+  };
 }
 
 // Body loi cua Anthropic: {"type":"error","error":{"type":"...","message":"..."}}
@@ -75,9 +89,13 @@ export async function POST(req: NextRequest) {
     // dryRun: xem prompt dung ra sao mà không gọi API, không tốn tiền.
     // Dùng để kiểm tra cấu hình lớp bằng curl.
     if (body?.dryRun === true) {
+      const sent = buildBody(mode, system, user, cfg.max_tokens);
       return NextResponse.json({
         dryRun: true,
         model: cfg.model,
+        max_tokens: sent.max_tokens,
+        tools: sent.tools,
+        tool_choice: sent.tool_choice,
         setup,
         poolPatterns:
           setup.curriculum === 'xirian' && setup.lesson !== null
@@ -94,33 +112,60 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Chưa cấu hình ANTHROPIC_API_KEY' }, { status: 500 });
     }
 
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: cfg.model,
-        max_tokens: cfg.max_tokens,
-        ...cfg.extra,
-        // Hồ sơ ngữ pháp dài và không đổi suốt buổi học -> cache lại,
-        // các lần gọi sau trong buổi chỉ trả ~10% giá cho phần này.
-        system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
-        messages: [{ role: 'user', content: user }],
-      }),
-    });
+    const send = (maxTokens: number) =>
+      fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify(buildBody(mode, system, user, maxTokens)),
+      });
 
+    let res = await send(cfg.max_tokens);
     if (!res.ok) {
       const detail = await res.text();
       console.error('Anthropic ' + res.status + ' (' + mode + '):', detail.slice(0, 300));
       return NextResponse.json({ error: viError(res.status, detail) }, { status: res.status });
     }
+    let data = await res.json();
+    let read = readToolUse(data);
 
-    const data = await res.json();
-    const raw: string = data?.content?.[0]?.text ?? '';
-    const parsed = extractJson(raw);
+    // Het tran token -> block tool_use bi cat giua chung, input khong day du.
+    // Goi lai dung MOT lan voi tran gap doi; van cat nua thi bao cho hoc vien.
+    if (!read.ok && read.kind === 'max_tokens') {
+      const bigger = cfg.max_tokens * 2;
+      console.error(`[${mode}] stop_reason=max_tokens ở ${cfg.max_tokens}, gọi lại với ${bigger}`);
+      res = await send(bigger);
+      if (!res.ok) {
+        const detail = await res.text();
+        console.error('Anthropic ' + res.status + ' (' + mode + ' retry):', detail.slice(0, 300));
+        return NextResponse.json({ error: viError(res.status, detail) }, { status: res.status });
+      }
+      data = await res.json();
+      read = readToolUse(data);
+    }
+
+    if (!read.ok) {
+      // Nhat ky debug: giu ca raw lan stop_reason de lan sau chan doan duoc.
+      const raw = JSON.stringify(data).slice(0, 2000);
+      if (read.kind === 'max_tokens') {
+        console.error(`[${mode}] vẫn max_tokens sau khi gấp đôi · raw=` + raw);
+        return NextResponse.json(
+          { error: RETRY_TOO_LONG, stop_reason: 'max_tokens', raw },
+          { status: 500 }
+        );
+      }
+      console.error(
+        `[${mode}] không có block tool_use · stop_reason=${read.stop_reason} · raw=` + raw
+      );
+      return NextResponse.json(
+        { error: 'Model không gọi tool như yêu cầu', stop_reason: read.stop_reason, raw },
+        { status: 500 }
+      );
+    }
+    const parsed: any = read.input;
 
     const u = data?.usage;
     if (u) {

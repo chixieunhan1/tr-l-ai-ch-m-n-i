@@ -5,6 +5,7 @@ import {
   readPassage, readSetup, todayTopic,
 } from '../lib/prompt';
 import type { Setup } from '../lib/prompt';
+import { TOOLS, readToolUse } from '../lib/schema';
 
 let pass = 0;
 const fails: string[] = [];
@@ -194,6 +195,105 @@ check('scene được nhúng vào prompt đoạn',
 check('đoạn dùng lại pool dừng ở bài 5', /\bB5 /.test(poolSection(sa)) && !/\bB6 /.test(poolSection(sa)));
 check('đoạn vẫn có bài trọng tâm', sa.includes('# Bài trọng tâm: bài 5'));
 check('đoạn vẫn có luật tích luỹ nghiêm ngặt', sa.includes('TÍCH LUỸ NGHIÊM NGẶT'));
+
+// --- Structured output bang tool use ----------------------------------------
+// Luat strict tool use: moi object phai co additionalProperties:false va required
+// liet ke DU truong; khong duoc dung minimum/maxLength... (schema se bi tu choi).
+console.log('\n[K] Tool schema (structured output)');
+
+type Node = { type?: string; properties?: Record<string, Node>; required?: string[];
+  additionalProperties?: boolean; items?: Node; enum?: unknown[] };
+
+const BANNED = ['minimum', 'maximum', 'multipleOf', 'minLength', 'maxLength',
+  'minItems', 'maxItems', 'pattern'];
+
+/** Duyet ca cay schema, tra ve danh sach vi pham. */
+function auditSchema(node: Node, path: string, out: string[]): string[] {
+  for (const k of BANNED) {
+    if (k in (node as Record<string, unknown>)) out.push(`${path}: có "${k}"`);
+  }
+  if (node.type === 'object') {
+    if (node.additionalProperties !== false) out.push(`${path}: thiếu additionalProperties:false`);
+    const props = Object.keys(node.properties || {});
+    const req = node.required || [];
+    for (const p of props) if (!req.includes(p)) out.push(`${path}: "${p}" không nằm trong required`);
+    for (const p of req) if (!props.includes(p)) out.push(`${path}: required thừa "${p}"`);
+    for (const [p, child] of Object.entries(node.properties || {})) auditSchema(child, `${path}.${p}`, out);
+  }
+  if (node.type === 'array') {
+    if (!node.items) out.push(`${path}: array thiếu items`);
+    else auditSchema(node.items, `${path}[]`, out);
+  }
+  return out;
+}
+
+for (const mode of ['fix', 'deep', 'passage'] as const) {
+  const tool = TOOLS[mode];
+  check(`${mode}: tên tool hợp lệ`, /^[a-zA-Z0-9_-]{1,64}$/.test(tool.name), tool.name);
+  check(`${mode}: bật strict`, tool.strict === true);
+  const bad = auditSchema(tool.input_schema as Node, mode, []);
+  check(`${mode}: schema hợp luật strict`, bad.length === 0, bad.join(' | '));
+}
+
+const fixProps = Object.keys((TOOLS.fix.input_schema as Node).properties!);
+eq('fix trả đúng 4 trường', fixProps.sort(), ['corrected', 'errors', 'register_detected', 'scene']);
+eq('passage trả đủ 7 trường',
+  Object.keys((TOOLS.passage.input_schema as Node).properties!).sort(),
+  ['cohesion', 'consistency', 'examples', 'note', 'recurring', 'rewritten', 'upgrades']);
+eq('deep trả đúng 3 trường',
+  Object.keys((TOOLS.deep.input_schema as Node).properties!).sort(),
+  ['examples', 'note', 'upgrades']);
+eq('mỗi mode một tool riêng',
+  new Set([TOOLS.fix.name, TOOLS.deep.name, TOOLS.passage.name]).size, 3);
+
+// Prompt khong con dan model tu in JSON — tool lo phan do.
+for (const [nameM, msg] of [
+  ['fix', buildUserMessage('fix', SENT, [])],
+  ['deep', buildUserMessage('deep', SENT, [])],
+  ['passage', buildPassageMessage(p3)],
+] as const) {
+  check(`${nameM}: bỏ lệnh "CHỈ trả về JSON thuần"`, !msg.includes('CHỈ trả về JSON thuần'));
+  check(`${nameM}: dặn gọi tool`, msg.includes('gọi tool được cung cấp'));
+}
+// ...nhung van phai giu phan MO TA y nghia tung truong.
+check('fix vẫn mô tả register_detected', buildUserMessage('fix', SENT, []).includes('register_detected'));
+check('passage vẫn mô tả rewritten', buildPassageMessage(p3).includes('"rewritten"'));
+
+// --- Doc phan hoi cua Anthropic ---------------------------------------------
+// Dung dung hinh dang that cua /v1/messages khi bi ep goi tool.
+console.log('\n[L] readToolUse');
+
+const okResp = {
+  stop_reason: 'tool_use',
+  content: [{ type: 'tool_use', id: 'toolu_1', name: 'tra_ket_qua_sua',
+    input: { corrected: '친구를 만났어요', errors: [] } }],
+};
+eq('lấy được input từ block tool_use', readToolUse(okResp), { ok: true, input: okResp.content[0].input });
+
+// Model duoc phep chen mot block text truoc tool_use.
+eq('bỏ qua block text đứng trước',
+  readToolUse({ stop_reason: 'tool_use',
+    content: [{ type: 'text', text: 'để tôi xem' }, { type: 'tool_use', input: { a: 1 } }] }),
+  { ok: true, input: { a: 1 } });
+
+// Het tran token: block tool_use CO the co mat nhung bi cat -> phai bao max_tokens,
+// khong duoc dung input do.
+eq('stop_reason=max_tokens → báo cắt, kể cả khi đã có block tool_use',
+  readToolUse({ stop_reason: 'max_tokens',
+    content: [{ type: 'tool_use', input: { corrected: '친구를' } }] }),
+  { ok: false, kind: 'max_tokens' });
+eq('max_tokens khi chưa kịp ra block nào',
+  readToolUse({ stop_reason: 'max_tokens', content: [] }), { ok: false, kind: 'max_tokens' });
+
+eq('model chỉ trả text, không gọi tool',
+  readToolUse({ stop_reason: 'end_turn', content: [{ type: 'text', text: '{"corrected":"..."}' }] }),
+  { ok: false, kind: 'no_tool', stop_reason: 'end_turn' });
+eq('content rỗng', readToolUse({ stop_reason: 'end_turn', content: [] }),
+  { ok: false, kind: 'no_tool', stop_reason: 'end_turn' });
+eq('phản hồi méo mó không làm nổ', readToolUse({}), { ok: false, kind: 'no_tool', stop_reason: null });
+eq('block tool_use thiếu input',
+  readToolUse({ stop_reason: 'tool_use', content: [{ type: 'tool_use' }] }),
+  { ok: false, kind: 'no_tool', stop_reason: 'tool_use' });
 
 // --- readSetup --------------------------------------------------------------
 console.log('\n[F] readSetup');

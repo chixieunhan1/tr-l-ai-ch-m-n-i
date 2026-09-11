@@ -81,3 +81,33 @@ console.log("bai trong tam    :", (d.system.match(/# Bài trọng tâm.*/)||["(k
 for (const f of ["rewritten","cohesion","consistency","recurring","upgrades","examples","note"])
   console.log((d.user.includes("\""+f+"\"")?"  CO  ":"  THIEU"), "truong", f);
 '
+
+echo
+echo "=============================================================="
+echo "[5] Structured output — ca 3 mode phai co tools + tool_choice"
+echo "=============================================================="
+SETUP='"level":"sc1","curriculum":"xirian","lesson":5,"review":[],"topic":"","register":"jondaetmal","dryRun":true'
+for MODE in fix deep passage; do
+  if [ "$MODE" = passage ]; then
+    BODY="{\"mode\":\"passage\",\"originals\":[\"친구를 만났어요\"],\"correcteds\":[\"친구를 만났어요\"],$SETUP}"
+  else
+    BODY="{\"mode\":\"$MODE\",\"text\":\"$SENT\",\"context\":[],$SETUP}"
+  fi
+  call "$BODY" | MODE="$MODE" node -e '
+const d=JSON.parse(require("fs").readFileSync(0,"utf8"));
+const m=process.env.MODE;
+const t=(d.tools||[])[0];
+const ok=(c)=>c?"  CO   ":"  THIEU";
+console.log("["+m+"] model", d.model, "· max_tokens", d.max_tokens);
+console.log(ok(Array.isArray(d.tools)&&d.tools.length===1), "tools (1 tool):", t&&t.name);
+console.log(ok(d.tool_choice&&d.tool_choice.type==="tool"&&t&&d.tool_choice.name===t.name),
+  "tool_choice ep goi dung tool do:", JSON.stringify(d.tool_choice));
+console.log(ok(t&&t.strict===true), "strict:true");
+const s=t&&t.input_schema||{};
+console.log(ok(s.additionalProperties===false), "additionalProperties:false");
+console.log(ok(Array.isArray(s.required)&&s.required.length===Object.keys(s.properties||{}).length),
+  "required day du:", (s.required||[]).join(", "));
+console.log(ok(!d.user.includes("CHỈ trả về JSON thuần")), "prompt da bo lenh tu in JSON");
+'
+  echo
+done

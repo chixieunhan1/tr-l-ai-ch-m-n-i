@@ -309,10 +309,7 @@ const FIX_FORMAT =
   'MỘT câu lạc đề lẻ, câu đệm, câu xã giao (hỏi thời tiết, sức khoẻ, khen ngợi) thì "changed" = false — ' +
   'giữ nguyên hoàn cảnh cũ, vì người nói vẫn đang ở trong tình huống đó.\n' +
   'Hoàn cảnh hiện tại đang trống thì "changed" = false và điền scene bạn suy ra được.\n' +
-  'CHỈ trả về JSON thuần, không markdown, không giải thích thêm:\n' +
-  '{"corrected":"câu đã sửa","register_detected":"존댓말",' +
-  '"scene":{"topic":"gọi món","setting":"quán ăn","interlocutor":"nhân viên phục vụ","register":"존댓말","changed":false},' +
-  '"errors":[{"wrong":"phần sai","right":"phần đúng","why":"lý do bằng tiếng Việt"}]}';
+  'Trả kết quả bằng cách gọi tool được cung cấp — không viết gì ngoài lời gọi tool.';
 
 const DEEP_FORMAT =
   'Với câu trên, đưa ra các cách diễn đạt tự nhiên hơn (upgrades), 2 câu ví dụ khác cùng ý (examples), và ghi chú (note).\n' +
@@ -320,10 +317,7 @@ const DEEP_FORMAT =
   'Các trường "vi" và "note" viết bằng tiếng Việt có dấu.\n' +
   '"patterns" liệt kê pattern CỦA BÀI TRỌNG TÂM mà câu đó dùng (mảng rỗng nếu không dùng cái nào).\n' +
   '"situation_changed" chỉ dùng cho examples, true khi phải đổi sang tình huống khác câu gốc.\n' +
-  'CHỈ trả về JSON thuần, không markdown, không giải thích thêm:\n' +
-  '{"upgrades":[{"ko":"","vi":"","patterns":[{"form":"-고 싶다","lesson":15}]}],' +
-  '"examples":[{"ko":"","vi":"","patterns":[{"form":"-고 싶다","lesson":15}],"situation_changed":false}],' +
-  '"note":"ghi chú bằng tiếng Việt"}';
+  'Trả kết quả bằng cách gọi tool được cung cấp — không viết gì ngoài lời gọi tool.';
 
 // Cham CA DOAN. Dung chung system prompt voi fix/deep (tich luy, bai trong tam,
 // 반말/존댓말, moc de nham deu ap y het) nen van an cache.
@@ -340,12 +334,7 @@ const PASSAGE_FORMAT =
   '"note": ghi chú tổng cho cả đoạn; độ dài theo đúng mục "Cách sửa" trong hướng dẫn hệ thống.\n' +
   'Các trường "vi", "cohesion", "consistency", "note" và "fix" viết bằng tiếng Việt có dấu.\n' +
   '"patterns" liệt kê pattern CỦA BÀI TRỌNG TÂM mà câu đó dùng (mảng rỗng nếu không dùng cái nào).\n' +
-  'CHỈ trả về JSON thuần, không markdown, không giải thích thêm:\n' +
-  '{"rewritten":"cả đoạn viết lại","cohesion":"","consistency":"",' +
-  '"recurring":[{"error":"","count":2,"fix":""}],' +
-  '"upgrades":[{"ko":"","vi":"","patterns":[{"form":"-고 싶다","lesson":15}]}],' +
-  '"examples":[{"ko":"","vi":"","patterns":[{"form":"-고 싶다","lesson":15}],"situation_changed":false}],' +
-  '"note":"ghi chú bằng tiếng Việt"}';
+  'Trả kết quả bằng cách gọi tool được cung cấp — không viết gì ngoài lời gọi tool.';
 
 export function buildPassageMessage(p: PassageInput, scene?: Scene | null): string {
   const rows = p.originals
